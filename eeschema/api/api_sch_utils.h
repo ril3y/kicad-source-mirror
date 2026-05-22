@@ -28,6 +28,7 @@
 #include <api/schematic/schematic_types.pb.h>
 
 class EDA_ITEM;
+class LIB_SYMBOL;
 class SCH_SYMBOL;
 class SCH_SHEET;
 class SCH_SHEET_PATH;
@@ -36,6 +37,15 @@ std::unique_ptr<EDA_ITEM> CreateItemForType( KICAD_T aType, EDA_ITEM* aContainer
 
 bool PackSymbol( kiapi::schematic::types::SchematicSymbolInstance* aOutput, const SCH_SYMBOL* aInput,
                  const SCH_SHEET_PATH& aPath );
+
+/**
+ * Pack a #LIB_SYMBOL into a SchematicSymbol proto suitable for use as the
+ * `definition` field of a SchematicSymbolInstance.  The packed form mirrors
+ * what SCH_SYMBOL::Serialize produces for the embedded definition, but
+ * additionally includes the library pins (which the instance path serialises
+ * separately via PackSymbol with sheet-specific UUIDs).
+ */
+void PackLibSymbol( kiapi::schematic::types::SchematicSymbol* aOutput, const LIB_SYMBOL* aInput );
 
 bool UnpackSymbol( SCH_SYMBOL* aOutput, const kiapi::schematic::types::SchematicSymbolInstance& aInput );
 

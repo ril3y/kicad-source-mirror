@@ -57,3 +57,28 @@ message SchematicNetlistResponse
 
   repeated SchematicNet nets = 2;
 }
+
+// Returns GetLibrarySymbolResponse.  Looks up a symbol by (library_nickname,
+// entry_name) in the project's loaded symbol library table and returns the
+// full library symbol definition.  The returned SchematicSymbol may be
+// assigned to the `definition` field of a SchematicSymbolInstance when
+// constructing a placement via CreateItems, so external clients do not need
+// to reimplement the .kicad_sym loader to drive the IPC.
+message GetLibrarySymbol
+{
+  // Type must be DT_SCHEMATIC and reference an open project.
+  kiapi.common.types.DocumentSpecifier document = 1;
+
+  // The (library_nickname, entry_name) tuple identifying the library symbol.
+  // Both fields are required; an empty value yields AS_BAD_REQUEST.
+  kiapi.common.types.LibraryIdentifier id = 2;
+}
+
+message GetLibrarySymbolResponse
+{
+  // The packed library symbol definition.  Populated only on success; on
+  // failure the API returns an error status (e.g. AS_BAD_REQUEST when the
+  // library nickname is unknown or the entry name is not present in that
+  // library).
+  SchematicSymbol symbol = 1;
+}

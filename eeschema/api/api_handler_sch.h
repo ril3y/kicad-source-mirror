@@ -120,6 +120,9 @@ private:
     HANDLER_RESULT<kiapi::schematic::types::SchematicNetlistResponse>
     handleGetSchematicNetlist( const HANDLER_CONTEXT<kiapi::schematic::types::GetSchematicNetlist>& aCtx );
 
+    HANDLER_RESULT<kiapi::schematic::types::GetLibrarySymbolResponse>
+    handleGetLibrarySymbol( const HANDLER_CONTEXT<kiapi::schematic::types::GetLibrarySymbol>& aCtx );
+
     SCHEMATIC* schematic() const;
 
     void filterValidSchTypes( std::set<KICAD_T>& aTypeList );

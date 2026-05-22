@@ -230,6 +230,56 @@ bool UnpackSymbol( SCH_SYMBOL* aOutput, const kiapi::schematic::types::Schematic
 }
 
 
+void PackLibSymbol( kiapi::schematic::types::SchematicSymbol* aOutput, const LIB_SYMBOL* aInput )
+{
+    using namespace kiapi::common;
+
+    PackLibId( aOutput->mutable_id(), aInput->GetLibId() );
+
+    google::protobuf::Any any;
+
+    aInput->GetField( FIELD_T::REFERENCE )->Serialize( any );
+    any.UnpackTo( aOutput->mutable_reference_field() );
+
+    aInput->GetField( FIELD_T::VALUE )->Serialize( any );
+    any.UnpackTo( aOutput->mutable_value_field() );
+
+    aInput->GetField( FIELD_T::FOOTPRINT )->Serialize( any );
+    any.UnpackTo( aOutput->mutable_footprint_field() );
+
+    aInput->GetField( FIELD_T::DATASHEET )->Serialize( any );
+    any.UnpackTo( aOutput->mutable_datasheet_field() );
+
+    aInput->GetField( FIELD_T::DESCRIPTION )->Serialize( any );
+    any.UnpackTo( aOutput->mutable_description_field() );
+
+    for( const SCH_ITEM& drawItem : aInput->GetDrawItems() )
+    {
+        // The five mandatory fields are packed via the dedicated *_field
+        // accessors above; skip them so they are not duplicated as generic
+        // items.
+        if( drawItem.Type() == SCH_FIELD_T
+            && static_cast<const SCH_FIELD&>( drawItem ).IsMandatory() )
+        {
+            continue;
+        }
+
+        kiapi::schematic::types::SchematicSymbolChild* item = aOutput->add_items();
+        item->mutable_unit()->set_unit( drawItem.GetUnit() );
+        item->mutable_body_style()->set_style( drawItem.GetBodyStyle() );
+        item->set_is_private( drawItem.IsPrivate() );
+        drawItem.Serialize( *item->mutable_item() );
+    }
+
+    aOutput->set_unit_count( aInput->GetUnitCount() );
+    aOutput->set_body_style_count( aInput->GetBodyStyleCount() );
+    aOutput->set_keywords( aInput->GetKeyWords().ToUTF8() );
+
+    for( const wxString& filter : aInput->GetFPFilters() )
+        aOutput->add_footprint_filters( filter.ToUTF8() );
+}
+
+
 bool PackSheet( kiapi::schematic::types::SheetSymbol* aOutput, const SCH_SHEET* aInput,
                 const SCH_SHEET_PATH& aPath )
 {
