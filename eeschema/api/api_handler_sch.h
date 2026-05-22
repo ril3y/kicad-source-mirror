@@ -211,6 +211,9 @@ private:
 
     class ERC_TASK;
 
+    HANDLER_RESULT<kiapi::schematic::types::GetLibrarySymbolResponse>
+    handleGetLibrarySymbol( const HANDLER_CONTEXT<kiapi::schematic::types::GetLibrarySymbol>& aCtx );
+
     SCHEMATIC* schematic() const;
 
     SCH_EDIT_FRAME* frame() const;

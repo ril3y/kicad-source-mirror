@@ -28,6 +28,10 @@
 #include <fmt.h>
 #include <fmt/ranges.h>
 #include <wx/log.h>
+#include <ki_exception.h>
+#include <lib_id.h>
+#include <lib_symbol.h>
+#include <libraries/symbol_library_adapter.h>
 #include <magic_enum.hpp>
 #include <base_screen.h>
 #include <base_units.h>
@@ -36,6 +40,7 @@
 #include <jobs/job_export_sch_plot.h>
 #include <kiway.h>
 #include <plotters/plotter_png.h>
+#include <project_sch.h>
 #include <sch_field.h>
 #include <sch_group.h>
 #include <common.h>
@@ -201,6 +206,8 @@ API_HANDLER_SCH::API_HANDLER_SCH( std::shared_ptr<SCH_CONTEXT> aContext,
             &API_HANDLER_SCH::handleExpandTextVariables );
     registerHandler<PlaceSymbolFromLibrary, PlaceFromLibraryResponse>(
             &API_HANDLER_SCH::handlePlaceSymbolFromLibrary );
+    registerHandler<GetLibrarySymbol, GetLibrarySymbolResponse>(
+            &API_HANDLER_SCH::handleGetLibrarySymbol );
 }
 
 
@@ -3351,6 +3358,74 @@ HANDLER_RESULT<PlaceFromLibraryResponse> API_HANDLER_SCH::handlePlaceSymbolFromL
 
     if( PackSymbol( &packed, placed, targetPath, schematic() ) )
         (void) response.mutable_item()->PackFrom( packed );
+
+    return response;
+}
+
+
+HANDLER_RESULT<kiapi::schematic::types::GetLibrarySymbolResponse>
+API_HANDLER_SCH::handleGetLibrarySymbol(
+        const HANDLER_CONTEXT<kiapi::schematic::types::GetLibrarySymbol>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
+
+    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() );
+
+    if( !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    const kiapi::common::types::LibraryIdentifier& libIdProto = aCtx.Request.id();
+    const wxString nickname = wxString::FromUTF8( libIdProto.library_nickname() );
+    const wxString entryName = wxString::FromUTF8( libIdProto.entry_name() );
+
+    if( nickname.IsEmpty() || entryName.IsEmpty() )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( "GetLibrarySymbol requires both library_nickname and entry_name" );
+        return tl::unexpected( e );
+    }
+
+    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &m_context->Prj() );
+
+    if( !adapter )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( "no symbol library adapter is available for this project" );
+        return tl::unexpected( e );
+    }
+
+    LIB_SYMBOL* libSymbol = nullptr;
+
+    try
+    {
+        libSymbol = adapter->LoadSymbol( nickname, entryName );
+    }
+    catch( const IO_ERROR& ioe )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( fmt::format( "could not load library symbol {}:{}: {}",
+                                          nickname.ToStdString(),
+                                          entryName.ToStdString(),
+                                          ioe.What().ToStdString() ) );
+        return tl::unexpected( e );
+    }
+
+    if( !libSymbol )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( fmt::format( "library symbol {}:{} was not found",
+                                          nickname.ToStdString(),
+                                          entryName.ToStdString() ) );
+        return tl::unexpected( e );
+    }
+
+    kiapi::schematic::types::GetLibrarySymbolResponse response;
+    PackLibSymbol( response.mutable_symbol(), libSymbol );
 
     return response;
 }

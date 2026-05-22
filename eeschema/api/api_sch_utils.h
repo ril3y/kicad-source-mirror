@@ -34,6 +34,7 @@
 #include <sch_sheet_path.h>
 
 class EDA_ITEM;
+class LIB_SYMBOL;
 class SCH_SYMBOL;
 class SCH_SHEET;
 class SCHEMATIC;
@@ -50,6 +51,15 @@ bool PackSymbol( kiapi::schematic::types::SchematicSymbolInstance* aOutput, cons
  * Unpack the geometry, the library definition, fields, and the default-variant attributes that
  * are shared between every placement. Single-placement data is handled by #ApplySymbolInstance.
  */
+/**
+ * Pack a #LIB_SYMBOL into a SchematicSymbol proto suitable for use as the
+ * `definition` field of a SchematicSymbolInstance.  The packed form mirrors
+ * what SCH_SYMBOL::Serialize produces for the embedded definition, but
+ * additionally includes the library pins (which the instance path serialises
+ * separately via PackSymbol with sheet-specific UUIDs).
+ */
+void PackLibSymbol( kiapi::schematic::types::SchematicSymbol* aOutput, const LIB_SYMBOL* aInput );
+
 bool UnpackSymbol( SCH_SYMBOL* aOutput, const kiapi::schematic::types::SchematicSymbolInstance& aInput );
 
 /**
