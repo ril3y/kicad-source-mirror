@@ -30,6 +30,7 @@
 #include <google/protobuf/empty.pb.h>
 #include <api/common/commands/variant_commands.pb.h>
 #include <api/common/tasks.pb.h>
+#include <api/common/commands/project_commands.pb.h>
 #include <api/schematic/schematic_commands.pb.h>
 #include <api/schematic/schematic_jobs.pb.h>
 #include <api/schematic/schematic_tasks.pb.h>
@@ -37,6 +38,7 @@
 
 using namespace kiapi;
 using namespace kiapi::common;
+using google::protobuf::Empty;
 
 using google::protobuf::Empty;
 
@@ -128,6 +130,8 @@ private:
     HANDLER_RESULT<commands::GetOpenDocumentsResponse>
     handleGetOpenDocuments( const HANDLER_CONTEXT<commands::GetOpenDocuments>& aCtx );
 
+    HANDLER_RESULT<Empty> handleSaveDocument( const HANDLER_CONTEXT<commands::SaveDocument>& aCtx );
+
     HANDLER_RESULT<commands::GetItemsResponse> handleGetItems( const HANDLER_CONTEXT<commands::GetItems>& aCtx );
 
     HANDLER_RESULT<commands::GetItemsResponse>
@@ -213,6 +217,18 @@ private:
 
     HANDLER_RESULT<kiapi::schematic::types::GetLibrarySymbolResponse>
     handleGetLibrarySymbol( const HANDLER_CONTEXT<kiapi::schematic::types::GetLibrarySymbol>& aCtx );
+
+    HANDLER_RESULT<kiapi::schematic::types::ListSymbolLibrariesResponse>
+    handleListSymbolLibraries(
+            const HANDLER_CONTEXT<kiapi::schematic::types::ListSymbolLibraries>& aCtx );
+
+    HANDLER_RESULT<kiapi::schematic::types::SearchLibrarySymbolsResponse>
+    handleSearchLibrarySymbols(
+            const HANDLER_CONTEXT<kiapi::schematic::types::SearchLibrarySymbols>& aCtx );
+
+    HANDLER_RESULT<kiapi::schematic::types::PlaceLibrarySymbolResponse>
+    handlePlaceLibrarySymbol(
+            const HANDLER_CONTEXT<kiapi::schematic::types::PlaceLibrarySymbol>& aCtx );
 
     SCHEMATIC* schematic() const;
 
