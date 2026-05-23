@@ -24,12 +24,14 @@
 #include <api/api_handler_editor.h>
 #include <api/sch_context.h>
 #include <api/common/commands/editor_commands.pb.h>
+#include <api/common/commands/project_commands.pb.h>
 #include <api/schematic/schematic_commands.pb.h>
 #include <api/schematic/schematic_jobs.pb.h>
 #include <kiid.h>
 
 using namespace kiapi;
 using namespace kiapi::common;
+using google::protobuf::Empty;
 
 class SCH_EDIT_FRAME;
 class SCH_ITEM;
@@ -88,6 +90,8 @@ private:
     HANDLER_RESULT<commands::GetOpenDocumentsResponse>
     handleGetOpenDocuments( const HANDLER_CONTEXT<commands::GetOpenDocuments>& aCtx );
 
+    HANDLER_RESULT<Empty> handleSaveDocument( const HANDLER_CONTEXT<commands::SaveDocument>& aCtx );
+
     HANDLER_RESULT<commands::GetItemsResponse> handleGetItems( const HANDLER_CONTEXT<commands::GetItems>& aCtx );
 
     HANDLER_RESULT<commands::GetItemsResponse>
@@ -122,6 +126,18 @@ private:
 
     HANDLER_RESULT<kiapi::schematic::types::GetLibrarySymbolResponse>
     handleGetLibrarySymbol( const HANDLER_CONTEXT<kiapi::schematic::types::GetLibrarySymbol>& aCtx );
+
+    HANDLER_RESULT<kiapi::schematic::types::ListSymbolLibrariesResponse>
+    handleListSymbolLibraries(
+            const HANDLER_CONTEXT<kiapi::schematic::types::ListSymbolLibraries>& aCtx );
+
+    HANDLER_RESULT<kiapi::schematic::types::SearchLibrarySymbolsResponse>
+    handleSearchLibrarySymbols(
+            const HANDLER_CONTEXT<kiapi::schematic::types::SearchLibrarySymbols>& aCtx );
+
+    HANDLER_RESULT<kiapi::schematic::types::PlaceLibrarySymbolResponse>
+    handlePlaceLibrarySymbol(
+            const HANDLER_CONTEXT<kiapi::schematic::types::PlaceLibrarySymbol>& aCtx );
 
     SCHEMATIC* schematic() const;
 

@@ -26,6 +26,7 @@
 #include <ki_exception.h>
 #include <lib_id.h>
 #include <lib_symbol.h>
+#include <libraries/library_table.h>
 #include <libraries/symbol_library_adapter.h>
 #include <magic_enum.hpp>
 #include <base_screen.h>
@@ -36,6 +37,7 @@
 #include <project_sch.h>
 #include <sch_field.h>
 #include <sch_group.h>
+#include <sch_reference_list.h>
 #include <connection_graph.h>
 #include <sch_commit.h>
 #include <sch_edit_frame.h>
@@ -118,6 +120,7 @@ API_HANDLER_SCH::API_HANDLER_SCH( std::shared_ptr<SCH_CONTEXT> aContext,
 
     registerHandler<GetOpenDocuments, GetOpenDocumentsResponse>(
             &API_HANDLER_SCH::handleGetOpenDocuments );
+    registerHandler<SaveDocument, Empty>( &API_HANDLER_SCH::handleSaveDocument );
     registerHandler<GetItems, GetItemsResponse>( &API_HANDLER_SCH::handleGetItems );
     registerHandler<GetItemsById, GetItemsResponse>( &API_HANDLER_SCH::handleGetItemsById );
 
@@ -139,6 +142,12 @@ API_HANDLER_SCH::API_HANDLER_SCH( std::shared_ptr<SCH_CONTEXT> aContext,
     registerHandler<GetSchematicNetlist, SchematicNetlistResponse>( &API_HANDLER_SCH::handleGetSchematicNetlist );
     registerHandler<GetLibrarySymbol, GetLibrarySymbolResponse>(
             &API_HANDLER_SCH::handleGetLibrarySymbol );
+    registerHandler<ListSymbolLibraries, ListSymbolLibrariesResponse>(
+            &API_HANDLER_SCH::handleListSymbolLibraries );
+    registerHandler<SearchLibrarySymbols, SearchLibrarySymbolsResponse>(
+            &API_HANDLER_SCH::handleSearchLibrarySymbols );
+    registerHandler<PlaceLibrarySymbol, PlaceLibrarySymbolResponse>(
+            &API_HANDLER_SCH::handlePlaceLibrarySymbol );
 }
 
 
@@ -245,6 +254,24 @@ HANDLER_RESULT<GetOpenDocumentsResponse> API_HANDLER_SCH::handleGetOpenDocuments
 
     response.mutable_documents()->Add( std::move( doc ) );
     return response;
+}
+
+
+HANDLER_RESULT<Empty> API_HANDLER_SCH::handleSaveDocument(
+        const HANDLER_CONTEXT<SaveDocument>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
+
+    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() );
+
+    if( !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    if( m_frame )
+        m_frame->SaveProject( false );
+
+    return Empty();
 }
 
 
@@ -1338,6 +1365,13 @@ API_HANDLER_SCH::handleGetLibrarySymbol(
         return tl::unexpected( e );
     }
 
+    // Ensure the library is loaded synchronously before attempting to find
+    // the symbol. Without this, standalone eeschema sessions (where the
+    // user hasn't manually browsed the library) return nullptr from
+    // LoadSymbol because the library row exists in the table but its
+    // contents have not yet been parsed from disk.
+    adapter->LoadLibraryEntry( nickname );
+
     LIB_SYMBOL* libSymbol = nullptr;
 
     try
@@ -1367,6 +1401,297 @@ API_HANDLER_SCH::handleGetLibrarySymbol(
 
     kiapi::schematic::types::GetLibrarySymbolResponse response;
     PackLibSymbol( response.mutable_symbol(), libSymbol );
+
+    return response;
+}
+
+
+HANDLER_RESULT<kiapi::schematic::types::ListSymbolLibrariesResponse>
+API_HANDLER_SCH::handleListSymbolLibraries(
+        const HANDLER_CONTEXT<kiapi::schematic::types::ListSymbolLibraries>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
+
+    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() );
+
+    if( !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &m_context->Prj() );
+
+    if( !adapter )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( "no symbol library adapter is available for this project" );
+        return tl::unexpected( e );
+    }
+
+    const bool includeDisabled = aCtx.Request.include_disabled();
+
+    kiapi::schematic::types::ListSymbolLibrariesResponse response;
+
+    // Rows() with BOTH scope returns the deduplicated view of global + project
+    // (project rows masking global ones with the same nickname), matching the
+    // chooser's behaviour.
+    std::vector<LIBRARY_TABLE_ROW*> rows = adapter->Rows( LIBRARY_TABLE_SCOPE::BOTH, false );
+
+    for( const LIBRARY_TABLE_ROW* row : rows )
+    {
+        if( !row )
+            continue;
+
+        if( !includeDisabled && row->Disabled() )
+            continue;
+
+        kiapi::schematic::types::SymbolLibraryInfo* info = response.add_libraries();
+        info->set_nickname( row->Nickname().ToUTF8() );
+        info->set_uri( row->URI().ToUTF8() );
+        info->set_description( row->Description().ToUTF8() );
+        info->set_enabled( !row->Disabled() );
+        info->set_type( row->Type().ToUTF8() );
+    }
+
+    return response;
+}
+
+
+HANDLER_RESULT<kiapi::schematic::types::SearchLibrarySymbolsResponse>
+API_HANDLER_SCH::handleSearchLibrarySymbols(
+        const HANDLER_CONTEXT<kiapi::schematic::types::SearchLibrarySymbols>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
+
+    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() );
+
+    if( !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &m_context->Prj() );
+
+    if( !adapter )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( "no symbol library adapter is available for this project" );
+        return tl::unexpected( e );
+    }
+
+    const wxString query = wxString::FromUTF8( aCtx.Request.query() ).Lower();
+
+    // Determine which library nicknames to search.
+    std::vector<wxString> nicknames;
+
+    if( aCtx.Request.library_nicknames_size() > 0 )
+    {
+        for( const std::string& nick : aCtx.Request.library_nicknames() )
+            nicknames.emplace_back( wxString::FromUTF8( nick ) );
+    }
+    else
+    {
+        nicknames = adapter->GetLibraryNames();
+    }
+
+    // Internal sanity cap so a wildcard search across a huge cache cannot
+    // produce an unbounded response; caller can override below this.
+    constexpr uint32_t kInternalCap = 5000;
+    uint32_t maxResults = aCtx.Request.max_results();
+
+    if( maxResults == 0 || maxResults > kInternalCap )
+        maxResults = kInternalCap;
+
+    kiapi::schematic::types::SearchLibrarySymbolsResponse response;
+    uint32_t emitted = 0;
+
+    for( const wxString& nickname : nicknames )
+    {
+        if( emitted >= maxResults )
+            break;
+
+        // Trigger synchronous load — same reason as in handleGetLibrarySymbol.
+        adapter->LoadLibraryEntry( nickname );
+
+        std::vector<LIB_SYMBOL*> symbols;
+
+        try
+        {
+            symbols = adapter->GetSymbols( nickname );
+        }
+        catch( const IO_ERROR& )
+        {
+            // A single broken library shouldn't fail the entire search.
+            continue;
+        }
+
+        for( const LIB_SYMBOL* sym : symbols )
+        {
+            if( emitted >= maxResults )
+                break;
+
+            if( !sym )
+                continue;
+
+            const wxString name = sym->GetName();
+            const wxString description = sym->GetDescription();
+            const wxString keywords = sym->GetKeyWords();
+
+            if( !query.IsEmpty() )
+            {
+                const bool nameMatches = name.Lower().Find( query ) != wxNOT_FOUND;
+                const bool descMatches = description.Lower().Find( query ) != wxNOT_FOUND;
+                const bool keywMatches = keywords.Lower().Find( query ) != wxNOT_FOUND;
+
+                if( !nameMatches && !descMatches && !keywMatches )
+                    continue;
+            }
+
+            kiapi::schematic::types::LibrarySymbolMatch* match = response.add_matches();
+            match->mutable_id()->set_library_nickname( nickname.ToUTF8() );
+            match->mutable_id()->set_entry_name( name.ToUTF8() );
+            match->set_description( description.ToUTF8() );
+            match->set_keywords( keywords.ToUTF8() );
+            ++emitted;
+        }
+    }
+
+    return response;
+}
+
+
+HANDLER_RESULT<kiapi::schematic::types::PlaceLibrarySymbolResponse>
+API_HANDLER_SCH::handlePlaceLibrarySymbol(
+        const HANDLER_CONTEXT<kiapi::schematic::types::PlaceLibrarySymbol>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
+
+    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() );
+
+    if( !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    const kiapi::common::types::LibraryIdentifier& libIdProto = aCtx.Request.id();
+    const wxString nickname = wxString::FromUTF8( libIdProto.library_nickname() );
+    const wxString entryName = wxString::FromUTF8( libIdProto.entry_name() );
+
+    if( nickname.IsEmpty() || entryName.IsEmpty() )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( "PlaceLibrarySymbol requires both library_nickname and entry_name" );
+        return tl::unexpected( e );
+    }
+
+    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &m_context->Prj() );
+
+    if( !adapter )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( "no symbol library adapter is available for this project" );
+        return tl::unexpected( e );
+    }
+
+    adapter->LoadLibraryEntry( nickname );
+
+    LIB_SYMBOL* libSymbol = nullptr;
+
+    try
+    {
+        libSymbol = adapter->LoadSymbol( nickname, entryName );
+    }
+    catch( const IO_ERROR& ioe )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( fmt::format( "could not load library symbol {}:{}: {}",
+                                          nickname.ToStdString(),
+                                          entryName.ToStdString(),
+                                          ioe.What().ToStdString() ) );
+        return tl::unexpected( e );
+    }
+
+    if( !libSymbol )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( fmt::format( "library symbol {}:{} was not found",
+                                          nickname.ToStdString(),
+                                          entryName.ToStdString() ) );
+        return tl::unexpected( e );
+    }
+
+    std::optional<SCH_SHEET_PATH> currentSheet = m_context->GetCurrentSheet();
+
+    if( !currentSheet )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( "no schematic sheet is currently active" );
+        return tl::unexpected( e );
+    }
+
+    SCH_SCREEN* screen = currentSheet->LastScreen();
+
+    if( !screen )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( "current sheet has no screen" );
+        return tl::unexpected( e );
+    }
+
+    LIB_ID libId( nickname, entryName );
+    VECTOR2I pos = UnpackVector2( aCtx.Request.position(), schIUScale );
+
+    int unit = static_cast<int>( aCtx.Request.unit() );
+    if( unit < 1 )
+        unit = 1;
+
+    // Use the same constructor the GUI uses in SCH_DRAWING_TOOLS::placeSymbol
+    // — this handles all the lib->instance fixup (pin transforms, default
+    // field positions, attribute inheritance) correctly.
+    SCH_SYMBOL* symbol = new SCH_SYMBOL( *libSymbol, libId, &*currentSheet, unit,
+                                         /*aBodyStyle=*/0, pos, schematic() );
+
+    // Orientation (defaults to 0 if SSO_UNKNOWN).
+    if( aCtx.Request.orientation() != kiapi::schematic::types::SSO_UNKNOWN )
+    {
+        symbol->SetOrientationProp(
+                FromProtoEnum<SYMBOL_ORIENTATION_PROP>( aCtx.Request.orientation() ) );
+    }
+
+    if( aCtx.Request.mirror_x() )
+        symbol->SetMirrorX( true );
+
+    if( aCtx.Request.mirror_y() )
+        symbol->SetMirrorY( true );
+
+    // Reference and value overrides, if provided.
+    const wxString reference = wxString::FromUTF8( aCtx.Request.reference() );
+    const wxString value = wxString::FromUTF8( aCtx.Request.value() );
+
+    if( !reference.IsEmpty() )
+        symbol->SetRef( &*currentSheet, reference );
+
+    if( !value.IsEmpty() )
+        symbol->SetValueFieldText( value, &*currentSheet );
+
+    // Autoplace fields (mirrors what SCH_DRAWING_TOOLS does after constructing
+    // a fresh placement).
+    symbol->AutoplaceFields( nullptr, AUTOPLACE_AUTO );
+
+    // Commit to the schematic.
+    std::unique_ptr<COMMIT> commitOwned = createCommit();
+    commitOwned->Add( symbol, screen );
+    commitOwned->Push( wxT( "Place Library Symbol (API)" ) );
+
+    // Pack the placed symbol into the response so the caller has the KIID
+    // and final state.
+    kiapi::schematic::types::PlaceLibrarySymbolResponse response;
+    PackSymbol( response.mutable_placed(), symbol, *currentSheet );
 
     return response;
 }
