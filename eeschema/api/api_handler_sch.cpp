@@ -1653,8 +1653,18 @@ API_HANDLER_SCH::handlePlaceLibrarySymbol(
     // Use the same constructor the GUI uses in SCH_DRAWING_TOOLS::placeSymbol
     // — this handles all the lib->instance fixup (pin transforms, default
     // field positions, attribute inheritance) correctly.
+    //
+    // aBodyStyle MUST be 1 (the "normal" representation) rather than 0
+    // (the "common/de-Morgan-alternate" representation). Body style 0 only
+    // emits the shared `_0_1` sub-symbol — for Device:R that is the
+    // rectangle alone, with no pin instances. Wires then have no pin
+    // tips to anchor on (the netlister still finds the pins via lib_id
+    // lookup, so the netlist looks correct, but eeschema's GUI drag/
+    // connect logic sees a body with zero pins and refuses to attach
+    // wires).  This was the source of the "IPC-placed symbols won't
+    // wire up" bug.
     SCH_SYMBOL* symbol = new SCH_SYMBOL( *libSymbol, libId, &*currentSheet, unit,
-                                         /*aBodyStyle=*/0, pos, schematic() );
+                                         /*aBodyStyle=*/1, pos, schematic() );
 
     // Orientation (defaults to 0 if SSO_UNKNOWN).
     if( aCtx.Request.orientation() != kiapi::schematic::types::SSO_UNKNOWN )
