@@ -269,7 +269,15 @@ HANDLER_RESULT<Empty> API_HANDLER_SCH::handleSaveDocument(
         return tl::unexpected( documentValidation.error() );
 
     if( m_frame )
+    {
+        // Sheets created over the API are not enumerated until the hierarchy is
+        // rebuilt and page numbers reassigned (otherwise a new sub-sheet saves
+        // with no instance / page in sheet_instances). Mirror what the GUI does
+        // after adding a sheet so SaveProject() writes a complete hierarchy.
+        m_frame->Schematic().RefreshHierarchy();
+        m_frame->SetSheetNumberAndCount();
         m_frame->SaveProject( false );
+    }
 
     return Empty();
 }
@@ -709,7 +717,23 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_SCH::handleCreateUpdateItemsIntern
             SCH_SHEET* sheet = static_cast<SCH_SHEET*>( item.get() );
 
             if( aCreate && !sheet->GetScreen() )
-                sheet->SetScreen( new SCH_SCREEN( schematic() ) );
+            {
+                // Give the new sheet a backing screen with an ABSOLUTE filename so
+                // SaveProject() actually writes the child .kicad_sch (and the
+                // hierarchy gets a real instance). InitSheet() mirrors the GUI's
+                // new-sheet setup (screen + filename + inherited page/title block).
+                // Fall back to a bare screen in headless mode (no edit frame).
+                if( m_frame )
+                {
+                    wxString absFile = m_frame->Prj().AbsolutePath( sheet->GetFileName() );
+                    absFile.Replace( wxT( "\\" ), wxT( "/" ) );
+                    m_frame->InitSheet( sheet, absFile );
+                }
+                else
+                {
+                    sheet->SetScreen( new SCH_SCREEN( schematic() ) );
+                }
+            }
 
             SCH_SHEET_PATH parentPath;
 
