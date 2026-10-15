@@ -709,7 +709,33 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_SCH::handleCreateUpdateItemsIntern
             SCH_SHEET* sheet = static_cast<SCH_SHEET*>( item.get() );
 
             if( aCreate && !sheet->GetScreen() )
-                sheet->SetScreen( new SCH_SCREEN( schematic() ) );
+            {
+                // Give the new sheet a backing screen with an ABSOLUTE filename so
+                // SaveProject() actually writes the child .kicad_sch (and the
+                // hierarchy gets a real instance). InitSheet() mirrors the GUI's
+                // new-sheet setup (screen + filename + inherited page/title block).
+                // Fall back to a bare screen in headless mode (no edit frame).
+                if( m_frame )
+                {
+                    wxString absFile = m_frame->Prj().AbsolutePath( sheet->GetFileName() );
+                    absFile.Replace( wxT( "\\" ), wxT( "/" ) );
+                    m_frame->InitSheet( sheet, absFile );
+
+                    // Register the new sheet's instance + assign its page number,
+                    // mirroring the GUI sheet loader, so it is enumerated in
+                    // sheet_instances on save. AddNewSheetInstances() only adds an
+                    // instance/page when one is missing, so it is safe.
+                    SCH_SHEET_LIST newHierarchy( sheet );
+                    newHierarchy.AddNewSymbolInstances( targetPath,
+                                                        m_frame->Prj().GetProjectName() );
+                    newHierarchy.AddNewSheetInstances(
+                            targetPath, schematic()->Hierarchy().GetLastVirtualPageNumber() );
+                }
+                else
+                {
+                    sheet->SetScreen( new SCH_SCREEN( schematic() ) );
+                }
+            }
 
             SCH_SHEET_PATH parentPath;
 
