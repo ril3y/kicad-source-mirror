@@ -31,6 +31,7 @@
 
 #include <erc/erc_settings.h>
 #include <gal/color4d.h>
+#include <math/vector2d.h>
 #include <sch_connection.h>
 #include <sch_item.h>
 #include <sch_netchain.h>
@@ -53,6 +54,26 @@ class SCH_HIERLABEL;
 class SCH_PIN;
 class SCH_SHEET_PIN;
 class SCH_NETCHAIN;
+
+
+/**
+ * Order points by x, then y, for use as a map or set key.
+ *
+ * VECTOR2::operator< compares vector lengths, so with the default comparator two distinct
+ * points at the same distance from the origin are the same key and items placed at one of
+ * them are treated as connected to items at the other.
+ */
+struct VECTOR2I_LEXICAL_LESS
+{
+    bool operator()( const VECTOR2I& aA, const VECTOR2I& aB ) const
+    {
+        return LexicographicalCompare( aA, aB ) < 0;
+    }
+};
+
+
+/// Items keyed by the schematic point they connect at.
+using CONNECTION_POINT_MAP = std::map<VECTOR2I, std::vector<SCH_ITEM*>, VECTOR2I_LEXICAL_LESS>;
 
 
 /**
@@ -618,7 +639,7 @@ private:
      */
     void updateSymbolConnectivity( const SCH_SHEET_PATH& aSheet,
                                    SCH_SYMBOL* aSymbol,
-                                   std::map<VECTOR2I, std::vector<SCH_ITEM*>>& aConnectionMap );
+                                   CONNECTION_POINT_MAP& aConnectionMap );
 
     /**
      * Update the connectivity of a pin and its connections.
@@ -636,7 +657,7 @@ private:
      */
     void updateGenericItemConnectivity( const SCH_SHEET_PATH& aSheet,
                                         SCH_ITEM* aItem,
-                                        std::map<VECTOR2I, std::vector<SCH_ITEM*>>& aConnectionMap );
+                                        CONNECTION_POINT_MAP& aConnectionMap );
 
     /**
      * Update the graphical connectivity between items (i.e. where they touch)

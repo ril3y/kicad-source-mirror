@@ -1783,7 +1783,7 @@ void SCHEMATIC::RecalculateConnections( SCH_COMMIT* aCommit, SCH_CLEANUP_FLAGS a
 
         // Final change sets
         std::set<SCH_ITEM*>                            changed_items;
-        std::set<VECTOR2I>                             pts;
+        std::set<VECTOR2I, VECTOR2I_LEXICAL_LESS>      pts;
         std::set<std::pair<SCH_SHEET_PATH, SCH_ITEM*>> item_paths;
 
         // Working change sets

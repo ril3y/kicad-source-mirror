@@ -1308,7 +1308,7 @@ void CONNECTION_GRAPH::removeSubgraphs( std::set<CONNECTION_SUBGRAPH*>& aSubgrap
 
 
 void CONNECTION_GRAPH::updateSymbolConnectivity( const SCH_SHEET_PATH& aSheet, SCH_SYMBOL* aSymbol,
-                                                 std::map<VECTOR2I, std::vector<SCH_ITEM*>>& aConnectionMap )
+                                                 CONNECTION_POINT_MAP& aConnectionMap )
 {
     auto updatePin =
             [&]( SCH_PIN* aPin, SCH_CONNECTION* aConn )
@@ -1389,7 +1389,7 @@ void CONNECTION_GRAPH::updatePinConnectivity( const SCH_SHEET_PATH& aSheet, SCH_
 
 
 void CONNECTION_GRAPH::updateGenericItemConnectivity( const SCH_SHEET_PATH& aSheet, SCH_ITEM* aItem,
-                                                      std::map<VECTOR2I, std::vector<SCH_ITEM*>>& aConnectionMap )
+                                                      CONNECTION_POINT_MAP& aConnectionMap )
 {
     std::vector<VECTOR2I> points = aItem->GetConnectionPoints();
     aItem->ClearConnectedItems( aSheet );
@@ -1434,7 +1434,7 @@ void CONNECTION_GRAPH::updateItemConnectivity( const SCH_SHEET_PATH& aSheet,
 {
     wxLogTrace( wxT( "Updating connectivity for sheet %s with %zu items" ),
                 aSheet.Last()->GetFileName(), aItemList.size() );
-    std::map<VECTOR2I, std::vector<SCH_ITEM*>> connection_map;
+    CONNECTION_POINT_MAP connection_map;
 
     for( SCH_ITEM* item : aItemList )
     {
