@@ -1327,7 +1327,7 @@ int ERC_TESTER::TestLabelMultipleWires()
 
     for( const SCH_SHEET_PATH& sheet : m_sheetList )
     {
-        std::map<VECTOR2I, std::vector<SCH_ITEM*>> connMap;
+        CONNECTION_POINT_MAP connMap;
 
         for( SCH_ITEM* item : sheet.LastScreen()->Items().OfType( SCH_LABEL_T ) )
         {
@@ -1413,7 +1413,7 @@ int ERC_TESTER::TestFourWayJunction()
 
     for( const SCH_SHEET_PATH& sheet : m_sheetList )
     {
-        std::map<VECTOR2I, std::vector<SCH_ITEM*>> connMap;
+        CONNECTION_POINT_MAP connMap;
         SCH_SCREEN* screen = sheet.LastScreen();
 
         for( SCH_ITEM* item : screen->Items().OfType( SCH_SYMBOL_T ) )
@@ -1495,7 +1495,7 @@ int ERC_TESTER::TestNoConnectPins()
 
     for( const SCH_SHEET_PATH& sheet : m_sheetList )
     {
-        std::map<VECTOR2I, std::vector<SCH_ITEM*>> pinMap;
+        CONNECTION_POINT_MAP pinMap;
 
         auto addOther =
                 [&]( const VECTOR2I& pt, SCH_ITEM* aOther )
