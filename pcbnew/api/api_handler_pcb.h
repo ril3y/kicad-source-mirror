@@ -223,6 +223,15 @@ private:
     HANDLER_RESULT<types::RunJobResponse> handleRunBoardJobExportStats(
             const HANDLER_CONTEXT<RunBoardJobExportStats>& aCtx );
 
+    HANDLER_RESULT<ListFootprintLibrariesResponse> handleListFootprintLibraries(
+            const HANDLER_CONTEXT<ListFootprintLibraries>& aCtx );
+
+    HANDLER_RESULT<SearchFootprintLibrariesResponse> handleSearchFootprintLibraries(
+            const HANDLER_CONTEXT<SearchFootprintLibraries>& aCtx );
+
+    HANDLER_RESULT<GetLibraryFootprintResponse> handleGetLibraryFootprint(
+            const HANDLER_CONTEXT<GetLibraryFootprint>& aCtx );
+
 protected:
     std::unique_ptr<COMMIT> createCommit() override;
 

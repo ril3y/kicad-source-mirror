@@ -269,7 +269,15 @@ HANDLER_RESULT<Empty> API_HANDLER_SCH::handleSaveDocument(
         return tl::unexpected( documentValidation.error() );
 
     if( m_frame )
+    {
+        // Sheets created over the API are not enumerated until the hierarchy is
+        // rebuilt and page numbers reassigned (otherwise a new sub-sheet saves
+        // with no instance / page in sheet_instances). Mirror what the GUI does
+        // after adding a sheet so SaveProject() writes a complete hierarchy.
+        m_frame->Schematic().RefreshHierarchy();
+        m_frame->SetSheetNumberAndCount();
         m_frame->SaveProject( false );
+    }
 
     return Empty();
 }

@@ -61,8 +61,13 @@
 #include <jobs/job_export_pcb_stats.h>
 #include <jobs/job_export_pcb_svg.h>
 #include <jobs/job_pcb_render.h>
+#include <footprint_library_adapter.h>
+#include <ki_exception.h>
 #include <layer_ids.h>
+#include <lib_id.h>
+#include <libraries/library_table.h>
 #include <project.h>
+#include <project_pcb.h>
 #include <tool/tool_manager.h>
 #include <tools/pcb_actions.h>
 #include <tools/pcb_selection_tool.h>
@@ -192,6 +197,13 @@ API_HANDLER_PCB::API_HANDLER_PCB( std::shared_ptr<BOARD_CONTEXT> aContext,
 
     registerHandler<GetPageSettings, types::PageSettings>( &API_HANDLER_PCB::handleGetPageSettings );
     registerHandler<SetPageSettings, types::PageSettings>( &API_HANDLER_PCB::handleSetPageSettings );
+
+    registerHandler<ListFootprintLibraries, ListFootprintLibrariesResponse>(
+            &API_HANDLER_PCB::handleListFootprintLibraries );
+    registerHandler<SearchFootprintLibraries, SearchFootprintLibrariesResponse>(
+            &API_HANDLER_PCB::handleSearchFootprintLibraries );
+    registerHandler<GetLibraryFootprint, GetLibraryFootprintResponse>(
+            &API_HANDLER_PCB::handleGetLibraryFootprint );
 }
 
 
@@ -3397,4 +3409,243 @@ HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportSt
     job.m_subtractHolesFromCopperAreas = aCtx.Request.subtract_holes_from_copper_areas();
 
     return ExecuteBoardJob( context(), job );
+}
+
+
+HANDLER_RESULT<ListFootprintLibrariesResponse>
+API_HANDLER_PCB::handleListFootprintLibraries(
+        const HANDLER_CONTEXT<ListFootprintLibraries>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
+
+    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
+
+    if( !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    FOOTPRINT_LIBRARY_ADAPTER* adapter = PROJECT_PCB::FootprintLibAdapter( &project() );
+
+    if( !adapter )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( "no footprint library adapter is available for this project" );
+        return tl::unexpected( e );
+    }
+
+    const bool includeDisabled = aCtx.Request.include_disabled();
+
+    ListFootprintLibrariesResponse response;
+
+    std::vector<LIBRARY_TABLE_ROW*> rows = adapter->Rows( LIBRARY_TABLE_SCOPE::BOTH, false );
+
+    for( const LIBRARY_TABLE_ROW* row : rows )
+    {
+        if( !row )
+            continue;
+
+        if( !includeDisabled && row->Disabled() )
+            continue;
+
+        FootprintLibraryInfo* info = response.add_libraries();
+        info->set_nickname( row->Nickname().ToUTF8() );
+        info->set_uri( row->URI().ToUTF8() );
+        info->set_description( row->Description().ToUTF8() );
+        info->set_enabled( !row->Disabled() );
+        info->set_type( row->Type().ToUTF8() );
+    }
+
+    return response;
+}
+
+
+HANDLER_RESULT<SearchFootprintLibrariesResponse>
+API_HANDLER_PCB::handleSearchFootprintLibraries(
+        const HANDLER_CONTEXT<SearchFootprintLibraries>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
+
+    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
+
+    if( !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    FOOTPRINT_LIBRARY_ADAPTER* adapter = PROJECT_PCB::FootprintLibAdapter( &project() );
+
+    if( !adapter )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( "no footprint library adapter is available for this project" );
+        return tl::unexpected( e );
+    }
+
+    const wxString query = wxString::FromUTF8( aCtx.Request.query() ).Lower();
+
+    std::vector<wxString> nicknames;
+
+    if( aCtx.Request.library_nicknames_size() > 0 )
+    {
+        for( const std::string& nick : aCtx.Request.library_nicknames() )
+            nicknames.emplace_back( wxString::FromUTF8( nick ) );
+    }
+    else
+    {
+        nicknames = adapter->GetLibraryNames();
+    }
+
+    constexpr uint32_t kInternalCap = 5000;
+    uint32_t maxResults = aCtx.Request.max_results();
+
+    if( maxResults == 0 || maxResults > kInternalCap )
+        maxResults = kInternalCap;
+
+    SearchFootprintLibrariesResponse response;
+    uint32_t emitted = 0;
+
+    for( const wxString& nickname : nicknames )
+    {
+        if( emitted >= maxResults )
+            break;
+
+        // Same auto-load as the schematic handler — table row may exist
+        // without the library having been parsed into memory yet.
+        adapter->LoadLibraryEntry( nickname );
+
+        std::vector<FOOTPRINT*> footprints;
+
+        try
+        {
+            footprints = adapter->GetFootprints( nickname, /*aBestEfforts=*/true );
+        }
+        catch( const IO_ERROR& )
+        {
+            continue;
+        }
+
+        for( const FOOTPRINT* fp : footprints )
+        {
+            if( emitted >= maxResults )
+                break;
+
+            if( !fp )
+                continue;
+
+            const wxString name = fp->GetFPID().GetLibItemName().wx_str();
+            const wxString description = fp->GetLibDescription();
+            const wxString keywords = fp->GetKeywords();
+
+            if( !query.IsEmpty() )
+            {
+                const bool nameMatches = name.Lower().Find( query ) != wxNOT_FOUND;
+                const bool descMatches = description.Lower().Find( query ) != wxNOT_FOUND;
+                const bool keywMatches = keywords.Lower().Find( query ) != wxNOT_FOUND;
+
+                if( !nameMatches && !descMatches && !keywMatches )
+                    continue;
+            }
+
+            LibraryFootprintMatch* match = response.add_matches();
+            match->mutable_id()->set_library_nickname( nickname.ToUTF8() );
+            match->mutable_id()->set_entry_name( name.ToUTF8() );
+            match->set_description( description.ToUTF8() );
+            match->set_keywords( keywords.ToUTF8() );
+            ++emitted;
+        }
+    }
+
+    return response;
+}
+
+
+HANDLER_RESULT<GetLibraryFootprintResponse>
+API_HANDLER_PCB::handleGetLibraryFootprint(
+        const HANDLER_CONTEXT<GetLibraryFootprint>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
+
+    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
+
+    if( !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    const kiapi::common::types::LibraryIdentifier& libIdProto = aCtx.Request.id();
+    const wxString nickname = wxString::FromUTF8( libIdProto.library_nickname() );
+    const wxString entryName = wxString::FromUTF8( libIdProto.entry_name() );
+
+    if( nickname.IsEmpty() || entryName.IsEmpty() )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( "GetLibraryFootprint requires both library_nickname and entry_name" );
+        return tl::unexpected( e );
+    }
+
+    FOOTPRINT_LIBRARY_ADAPTER* adapter = PROJECT_PCB::FootprintLibAdapter( &project() );
+
+    if( !adapter )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( "no footprint library adapter is available for this project" );
+        return tl::unexpected( e );
+    }
+
+    // Trigger synchronous load — see handleGetLibrarySymbol for rationale.
+    adapter->LoadLibraryEntry( nickname );
+
+    FOOTPRINT* footprint = nullptr;
+
+    try
+    {
+        footprint = adapter->LoadFootprint( nickname, entryName, /*aKeepUUID=*/false );
+    }
+    catch( const IO_ERROR& ioe )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( fmt::format( "could not load library footprint {}:{}: {}",
+                                          nickname.ToStdString(),
+                                          entryName.ToStdString(),
+                                          ioe.What().ToStdString() ) );
+        return tl::unexpected( e );
+    }
+
+    if( !footprint )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( fmt::format( "library footprint {}:{} was not found",
+                                          nickname.ToStdString(),
+                                          entryName.ToStdString() ) );
+        return tl::unexpected( e );
+    }
+
+    GetLibraryFootprintResponse response;
+
+    // Footprint serializes into a FootprintInstance proto; we only want
+    // the library-side Footprint definition portion, so use a temporary
+    // Any to extract the embedded definition.
+    google::protobuf::Any any;
+    footprint->Serialize( any );
+
+    kiapi::board::types::FootprintInstance instance;
+
+    if( any.UnpackTo( &instance ) && instance.has_definition() )
+    {
+        response.mutable_footprint()->CopyFrom( instance.definition() );
+    }
+    else
+    {
+        // Fall back to packing manually if the serializer's output shape
+        // changes — at minimum we can return the lib id so callers can
+        // distinguish "found but unable to pack" from "not found".
+        response.mutable_footprint()->mutable_id()->set_library_nickname( nickname.ToUTF8() );
+        response.mutable_footprint()->mutable_id()->set_entry_name( entryName.ToUTF8() );
+    }
+
+    return response;
 }

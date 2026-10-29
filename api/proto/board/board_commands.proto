@@ -488,3 +488,104 @@ message InteractiveMoveItems
 
   repeated kiapi.common.types.KIID items = 2;
 }
+
+// Descriptor for a single footprint library in the project's loaded
+// library tables.  Returned by ListFootprintLibraries.
+message FootprintLibraryInfo
+{
+  // Library nickname (the key used in LibraryIdentifier.library_nickname).
+  string nickname = 1;
+
+  // Unresolved URI of the library (may contain ${KICAD_*} env-var references).
+  string uri = 2;
+
+  // Human-readable description from the library table row.
+  string description = 3;
+
+  // True if the row is marked enabled (visible to users).
+  bool enabled = 4;
+
+  // Library type — "KiCad", "Legacy", "Altium", "Eagle", etc.
+  string type = 5;
+}
+
+// Returns ListFootprintLibrariesResponse.  Enumerates the footprint
+// libraries loaded in the project's adapter (combined global + project
+// fp-lib-table, deduplicated by nickname with project rows masking global).
+message ListFootprintLibraries
+{
+  // Type must be DT_PCB and reference an open project.
+  kiapi.common.types.DocumentSpecifier board = 1;
+
+  // If true, include libraries marked disabled in the table.  Defaults to
+  // false (matching the GUI's footprint chooser behaviour).
+  bool include_disabled = 2;
+}
+
+message ListFootprintLibrariesResponse
+{
+  repeated FootprintLibraryInfo libraries = 1;
+}
+
+// A single match returned by SearchFootprintLibraries.  Carries enough
+// metadata for a chooser without fetching the full Footprint body;
+// clients call GetLibraryFootprint once the user picks one.
+message LibraryFootprintMatch
+{
+  // Fully-qualified library identifier (library_nickname + entry_name).
+  kiapi.common.types.LibraryIdentifier id = 1;
+
+  // Description string from the footprint's description field.
+  string description = 2;
+
+  // Keywords from the footprint metadata.
+  string keywords = 3;
+}
+
+// Returns SearchFootprintLibrariesResponse.  Performs a case-insensitive
+// substring match against each footprint's name, description, and keywords
+// in every loaded library (or in the subset listed in library_nicknames).
+message SearchFootprintLibraries
+{
+  // Type must be DT_PCB and reference an open project.
+  kiapi.common.types.DocumentSpecifier board = 1;
+
+  // The query string. Matched case-insensitively against footprint name,
+  // description, and keywords.  An empty query yields every footprint
+  // in the searched libraries.
+  string query = 2;
+
+  // Optional library nickname filter.  If empty, all libraries are
+  // searched.  If non-empty, only the listed libraries are searched.
+  repeated string library_nicknames = 3;
+
+  // Optional cap on the number of returned matches.  0 means no limit;
+  // implementations may still apply an internal sanity cap.
+  uint32 max_results = 4;
+}
+
+message SearchFootprintLibrariesResponse
+{
+  repeated LibraryFootprintMatch matches = 1;
+}
+
+// Returns GetLibraryFootprintResponse.  Looks up a footprint by
+// (library_nickname, entry_name) in the project's loaded footprint
+// library table and returns the full library footprint definition,
+// suitable for use as the `definition` field of a FootprintInstance
+// when constructing a placement via CreateItems.
+message GetLibraryFootprint
+{
+  // Type must be DT_PCB and reference an open project.
+  kiapi.common.types.DocumentSpecifier board = 1;
+
+  // The (library_nickname, entry_name) tuple identifying the footprint.
+  // Both fields are required; an empty value yields AS_BAD_REQUEST.
+  kiapi.common.types.LibraryIdentifier id = 2;
+}
+
+message GetLibraryFootprintResponse
+{
+  // The packed library footprint definition.  Populated only on success.
+  kiapi.board.types.Footprint footprint = 1;
+}

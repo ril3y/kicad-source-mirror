@@ -121,9 +121,11 @@ public:
                         }
                         catch( ... )
                         {
-                            wxLogTrace( traceGit,
-                                        "Orphan git thread [%s] threw an exception",
-                                        label.c_str() );
+                            // kicad-mcp local: wxLogger's templated members fail to
+                            // resolve in this build env (wx 3.3.2 / MSVC 14.39).
+                            // Drop the trace entirely — it was diagnostic-only.
+                            // Do NOT include in upstream MR.
+                            (void) label;
                         }
 
                         {
@@ -140,7 +142,8 @@ public:
             throw;
         }
 
-        wxLogTrace( traceGit, "Registered orphan git thread [%s]", aLabel.c_str() );
+        // kicad-mcp local: see note above. Trace dropped.
+        (void) aLabel;
         return true;
     }
 

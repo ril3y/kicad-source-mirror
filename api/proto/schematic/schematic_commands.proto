@@ -82,3 +82,135 @@ message GetLibrarySymbolResponse
   // library).
   SchematicSymbol symbol = 1;
 }
+
+// Descriptor for a single symbol library in the project's loaded library
+// tables.  Returned by ListSymbolLibraries.
+message SymbolLibraryInfo
+{
+  // Library nickname (the key used in LibraryIdentifier.library_nickname).
+  string nickname = 1;
+
+  // Unresolved URI of the library (may contain ${KICAD_*} env-var references).
+  string uri = 2;
+
+  // Human-readable description from the library table row.
+  string description = 3;
+
+  // True if the row is marked enabled (visible to users).
+  bool enabled = 4;
+
+  // Library type — typically one of "KiCad", "Legacy", "Altium", etc.
+  string type = 5;
+}
+
+// Returns ListSymbolLibrariesResponse.  Enumerates the symbol libraries
+// loaded in the project's adapter (combined global + project library
+// tables, deduplicated by nickname with project rows masking global ones).
+message ListSymbolLibraries
+{
+  // Type must be DT_SCHEMATIC and reference an open project.
+  kiapi.common.types.DocumentSpecifier document = 1;
+
+  // If true, include libraries marked disabled in the table.  Defaults to
+  // false (matching the GUI's symbol chooser behaviour).
+  bool include_disabled = 2;
+}
+
+message ListSymbolLibrariesResponse
+{
+  repeated SymbolLibraryInfo libraries = 1;
+}
+
+// A single match returned by SearchLibrarySymbols.  Carries enough
+// metadata for an external client to display a chooser without fetching
+// the full SchematicSymbol body; clients call GetLibrarySymbol once the
+// user picks one.
+message LibrarySymbolMatch
+{
+  // Fully-qualified library identifier (library_nickname + entry_name).
+  kiapi.common.types.LibraryIdentifier id = 1;
+
+  // Description string from the symbol's "Description" field.
+  string description = 2;
+
+  // Keywords from the symbol's "ki_keywords" field.
+  string keywords = 3;
+}
+
+// Returns SearchLibrarySymbolsResponse.  Performs a case-insensitive
+// substring match against each symbol's name, description, and keywords
+// in every loaded library (or in the subset listed in library_nicknames).
+// Returns up to max_results matches.
+message SearchLibrarySymbols
+{
+  // Type must be DT_SCHEMATIC and reference an open project.
+  kiapi.common.types.DocumentSpecifier document = 1;
+
+  // The query string. Matched case-insensitively against symbol name,
+  // description, and keywords.  An empty query yields every symbol in
+  // the searched libraries.
+  string query = 2;
+
+  // Optional library nickname filter.  If empty, all libraries are
+  // searched.  If non-empty, only the listed libraries are searched.
+  repeated string library_nicknames = 3;
+
+  // Optional cap on the number of returned matches.  0 means no limit;
+  // implementations may still apply an internal sanity cap.
+  uint32 max_results = 4;
+}
+
+message SearchLibrarySymbolsResponse
+{
+  repeated LibrarySymbolMatch matches = 1;
+}
+
+// Returns PlaceLibrarySymbolResponse.  Looks up a library symbol by its
+// LibraryIdentifier, constructs a new SCH_SYMBOL using KiCad's GUI
+// constructor (which handles all lib->instance fixup: pin transforms,
+// default field positions, attribute inheritance, etc.), and adds it to
+// the current schematic sheet via a commit.
+//
+// This is the recommended way to place a library symbol — it mirrors the
+// GUI "place from library" path one-to-one.  External clients should
+// prefer this over manually constructing a SchematicSymbolInstance via
+// CreateItems, which requires the client to reimplement KiCad's
+// coordinate, transform, and field-defaulting logic.
+message PlaceLibrarySymbol
+{
+  // Type must be DT_SCHEMATIC and reference an open project.
+  kiapi.common.types.DocumentSpecifier document = 1;
+
+  // The (library_nickname, entry_name) tuple identifying the library symbol.
+  kiapi.common.types.LibraryIdentifier id = 2;
+
+  // World-coordinate placement position (nm).
+  kiapi.common.types.Vector2 position = 3;
+
+  // Optional reference designator override.  If empty, the library
+  // symbol's reference prefix is used and the next available number is
+  // auto-assigned.
+  string reference = 4;
+
+  // Optional value override.  If empty, the library symbol's default
+  // value is used (typically the symbol name).
+  string value = 5;
+
+  // 1-based unit number for multi-unit symbols.  0 or 1 selects the
+  // first unit.
+  uint32 unit = 6;
+
+  // Optional orientation.  SSO_UNKNOWN (default) means 0 degrees.
+  SchematicSymbolOrientation orientation = 7;
+
+  // Mirror flags (applied after orientation).
+  bool mirror_x = 8;
+  bool mirror_y = 9;
+}
+
+message PlaceLibrarySymbolResponse
+{
+  // The placed symbol packed as a SchematicSymbolInstance for the
+  // client's information (KIID, final position, fields, etc.).
+  SchematicSymbolInstance placed = 1;
+}
