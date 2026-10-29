@@ -79,6 +79,10 @@
 #include <dialogs/dialog_symbol_fields_table.h>
 #include <confirm.h>
 #include <project_sch.h>
+#include <project/project_file.h>
+#include <sch_sheet.h>
+#include <sch_sheet_path.h>
+#include <sch_symbol.h>
 
 #include <libraries/symbol_library_adapter.h>
 
@@ -1411,6 +1415,9 @@ int EESCHEMA_JOBS_HANDLER::JobUpgrade( JOB* aJob )
     schPath.MakeAbsolute();
     const wxString schFullPath = schPath.GetFullPath();
 
+    if( schPath.GetExt() == FILEEXT::LegacySchematicFileExtension )
+        return upgradeLegacySchematic( sch, schFullPath );
+
     try
     {
         IO_RELEASER<SCH_IO> pi( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
@@ -1422,6 +1429,149 @@ int EESCHEMA_JOBS_HANDLER::JobUpgrade( JOB* aJob )
         wxString msg =
                 wxString::Format( _( "Error saving schematic file '%s'.\n%s" ), schFullPath, ioe.What().GetData() );
         m_reporter->Report( msg, RPT_SEVERITY_ERROR );
+        return CLI::EXIT_CODES::ERR_UNKNOWN;
+    }
+
+    m_reporter->Report( _( "Successfully saved schematic file using the latest format\n" ), RPT_SEVERITY_INFO );
+
+    return CLI::EXIT_CODES::SUCCESS;
+}
+
+
+int EESCHEMA_JOBS_HANDLER::upgradeLegacySchematic( SCHEMATIC* aSch, const wxString& aSchFullPath )
+{
+    PROJECT&    project = aSch->Project();
+    SCH_SCREENS screens( aSch->Root() );
+    wxString    msg;
+
+    if( project.IsNullProject() )
+    {
+        m_reporter->Report( _( "A legacy schematic can only be upgraded with its project file\n" ),
+                            RPT_SEVERITY_ERROR );
+        return CLI::EXIT_CODES::ERR_INVALID_INPUT_FILE;
+    }
+
+    if( screens.HasNoFullyDefinedLibIds() )
+    {
+        m_reporter->Report( _( "Schematic predates symbol library tables; open it in the schematic "
+                               "editor to remap its symbols first\n" ),
+                            RPT_SEVERITY_ERROR );
+        return CLI::EXIT_CODES::ERR_INVALID_INPUT_FILE;
+    }
+
+    // Same as the schematic editor: register the legacy cache library in the project symbol
+    // library table and point symbols that are not found in any other library at it.
+    wxFileName cacheFn( aSchFullPath );
+    cacheFn.SetName( cacheFn.GetName() + "-cache" );
+    cacheFn.SetExt( FILEEXT::LegacySymbolLibFileExtension );
+
+    if( cacheFn.FileExists() )
+    {
+        screens.LinkLegacyCacheLibrary( &project, cacheFn.GetFullPath() );
+        screens.UpdateSymbolLinks();
+    }
+    else
+    {
+        m_reporter->Report( wxString::Format( _( "Project symbol library cache file '%s' was not "
+                                                 "found; symbols may not convert correctly\n" ),
+                                              cacheFn.GetFullName() ),
+                            RPT_SEVERITY_WARNING );
+    }
+
+    for( SCH_SCREEN* screen = screens.GetFirst(); screen; screen = screens.GetNext() )
+    {
+        for( SCH_ITEM* item : screen->Items().OfType( SCH_SYMBOL_T ) )
+        {
+            SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( item );
+
+            if( !symbol->GetLibSymbolRef() )
+            {
+                msg.Printf( _( "No library symbol found for schematic symbol '%s %s'\n" ),
+                            symbol->GetField( FIELD_T::REFERENCE )->GetText(),
+                            symbol->GetField( FIELD_T::VALUE )->GetText() );
+                m_reporter->Report( msg, RPT_SEVERITY_WARNING );
+            }
+        }
+    }
+
+    // Save every sheet next to its legacy file using the new file name extension, the same
+    // as SCH_EDIT_FRAME::SaveProject() does for legacy schematics.
+    IO_RELEASER<SCH_IO> pi( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
+
+    screens.BuildClientSheetPathList();
+
+    for( size_t i = 0; i < screens.GetCount(); i++ )
+    {
+        SCH_SCREEN* screen = screens.GetScreen( i );
+
+        wxCHECK2( screen, continue );
+
+        wxFileName fn = screen->GetFileName();
+
+        if( !fn.IsOk() )
+            continue;
+
+        if( fn.GetExt() != FILEEXT::KiCadSchematicFileExtension )
+        {
+            fn.SetExt( FILEEXT::KiCadSchematicFileExtension );
+
+            for( SCH_ITEM* item : screen->Items().OfType( SCH_SHEET_T ) )
+            {
+                SCH_SHEET* sheet = static_cast<SCH_SHEET*>( item );
+                wxFileName sheetFileName = sheet->GetFileName();
+
+                if( !sheetFileName.IsOk()
+                    || sheetFileName.GetExt() == FILEEXT::KiCadSchematicFileExtension )
+                    continue;
+
+                sheetFileName.SetExt( FILEEXT::KiCadSchematicFileExtension );
+                sheet->SetFileName( sheetFileName.GetFullPath() );
+            }
+
+            // Legacy files have no screen UUIDs so each screen already got a new one when it was
+            // loaded, and a top-level sheet's UUID matches it; do not assign another.
+            screen->SetFileName( fn.GetFullPath() );
+        }
+
+        if( screen->GetClientSheetPaths().size() == 1 )
+            screen->SetVirtualPageNumber( 1 );
+        else
+            screen->SetVirtualPageNumber( 0 );  // multiple uses; no way to store the real sheet #
+
+        try
+        {
+            pi->SaveSchematicFile( fn.GetFullPath(), screens.GetSheet( i ), aSch );
+        }
+        catch( const IO_ERROR& ioe )
+        {
+            msg.Printf( _( "Error saving schematic file '%s'.\n%s" ), fn.GetFullPath(), ioe.What() );
+            m_reporter->Report( msg, RPT_SEVERITY_ERROR );
+            return CLI::EXIT_CODES::ERR_UNKNOWN;
+        }
+
+        m_reporter->Report( wxString::Format( _( "Saved %s\n" ), fn.GetFullPath() ),
+                            RPT_SEVERITY_ACTION );
+    }
+
+    // Save the sheet name map and the migrated legacy settings to the project file
+    std::vector<FILE_INFO_PAIR>& sheets = project.GetProjectFile().GetSheets();
+    sheets.clear();
+
+    for( SCH_SHEET_PATH& sheetPath : aSch->Hierarchy() )
+    {
+        SCH_SHEET* sheet = sheetPath.Last();
+
+        wxCHECK2( sheet, continue );
+
+        if( !sheet->IsVirtualRootSheet() )
+            sheets.emplace_back( std::make_pair( sheet->m_Uuid, sheet->GetName() ) );
+    }
+
+    if( !Pgm().GetSettingsManager().SaveProject( wxEmptyString, &project ) )
+    {
+        m_reporter->Report( wxString::Format( _( "Unable to save project file '%s'\n" ),
+                                              project.GetProjectFullName() ),
+                            RPT_SEVERITY_ERROR );
         return CLI::EXIT_CODES::ERR_UNKNOWN;
     }
 

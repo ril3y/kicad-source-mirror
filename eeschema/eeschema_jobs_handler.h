@@ -71,6 +71,13 @@ public:
 private:
     SCHEMATIC* getSchematic( const wxString& aPath );
 
+    /**
+     * Save a schematic loaded from legacy (KiCad 5 and earlier) files in the s-expression
+     * format: every sheet becomes a .kicad_sch file next to its .sch file and the project is
+     * written as a .kicad_pro file, the same as saving the project in the schematic editor.
+     */
+    int upgradeLegacySchematic( SCHEMATIC* aSch, const wxString& aSchFullPath );
+
     int doSymExportSvg( JOB_SYM_EXPORT_SVG* aSvgJob, SCH_RENDER_SETTINGS* aRenderSettings,
                         LIB_SYMBOL* symbol );
 

@@ -31,6 +31,7 @@
 #include <sch_label.h>
 #include <sch_io/sch_io.h>
 #include <sch_io/sch_io_mgr.h>
+#include <sch_screen.h>
 #include <settings/settings_manager.h>
 #include <wildcards_and_files_ext.h>
 #include <tool/tool_manager.h>
@@ -92,7 +93,11 @@ SCHEMATIC* EESCHEMA_HELPERS::LoadSchematic( const wxString& aFileName,
     {
         if( !project )
         {
-            if( wxFileExists( projectPath ) )
+            // A legacy .pro project is migrated to the current format when loaded
+            wxFileName legacyPro = pro;
+            legacyPro.SetExt( FILEEXT::LegacyProjectFileExtension );
+
+            if( wxFileExists( projectPath ) || legacyPro.FileExists() )
             {
                 mgr.LoadProject( projectPath, aSetActive );
                 project = mgr.GetProject( projectPath );
@@ -131,6 +136,9 @@ SCHEMATIC* EESCHEMA_HELPERS::LoadSchematic( const wxString& aFileName,
         return nullptr;
     }
 
+    if( aFormat == SCH_IO_MGR::SCH_LEGACY )
+        MigrateLegacySchematic( schematic );
+
     SCH_SHEET_LIST sheetList = schematic->BuildSheetListSortedByPageNumbers();
     SCH_SCREENS    screens( schematic->Root() );
 
@@ -142,11 +150,23 @@ SCHEMATIC* EESCHEMA_HELPERS::LoadSchematic( const wxString& aFileName,
 
     sheetList.UpdateSheetInstanceData( schematic->RootScreen()->GetSheetInstances());
 
-    if( schematic->RootScreen()->GetFileFormatVersionAtLoad() < 20230221 )
+    if( aFormat == SCH_IO_MGR::SCH_LEGACY
+        || schematic->RootScreen()->GetFileFormatVersionAtLoad() < 20230221 )
+    {
         screens.FixLegacyPowerSymbolMismatches();
+    }
 
     for( SCH_SCREEN* screen = screens.GetFirst(); screen; screen = screens.GetNext() )
         screen->MigrateSimModels();
+
+    if( aFormat == SCH_IO_MGR::SCH_LEGACY )
+    {
+        // Legacy files store the reference and unit on the symbol itself; create the
+        // per-sheet-path instances that hold them in the current format.
+        screens.PruneOrphanedSymbolInstances( project->GetProjectName(), sheetList );
+        screens.PruneOrphanedSheetInstances( project->GetProjectName(), sheetList );
+        sheetList.CheckForMissingSymbolInstances( project->GetProjectName() );
+    }
 
     sheetList.AnnotatePowerSymbols();
 
@@ -160,6 +180,11 @@ SCHEMATIC* EESCHEMA_HELPERS::LoadSchematic( const wxString& aFileName,
         SCH_COMMIT dummyCommit( toolManager );
         schematic->RecalculateConnections( &dummyCommit, GLOBAL_CLEANUP, toolManager );
     }
+
+    // Same as the schematic editor: merging colinear wire segments can break connectivity in
+    // legacy files saved without valid libraries unless the implied junctions are re-created.
+    if( aFormat == SCH_IO_MGR::SCH_LEGACY )
+        schematic->FixupJunctionsAfterImport();
 
     schematic->ResolveERCExclusionsPostUpdate();
 
@@ -176,4 +201,28 @@ SCHEMATIC* EESCHEMA_HELPERS::LoadSchematic( const wxString& aFileName,
         schematic->ConnectionGraph()->Recalculate( sheetList, true );
 
     return schematic;
+}
+
+
+void EESCHEMA_HELPERS::MigrateLegacySchematic( SCHEMATIC* aSchematic )
+{
+    SCH_SCREENS screens( aSchematic->Root() );
+
+    // Same as the s-expression parser: a top-level sheet takes the UUID of its schematic file,
+    // which is what symbol instance paths start with once the file is saved and reloaded.
+    for( SCH_SHEET* sheet : aSchematic->GetTopLevelSheets() )
+    {
+        if( sheet->GetScreen() )
+            const_cast<KIID&>( sheet->m_Uuid ) = sheet->GetScreen()->GetUuid();
+    }
+
+    screens.ConvertBusBusEntries();
+
+    // Link symbols through the project symbol library table, falling back to the legacy
+    // cache library for symbols whose library is no longer available.
+    screens.UpdateSymbolLinks();
+
+    // Legacy schematics can have duplicate time stamps so fix that before converting
+    // to the s-expression format.
+    screens.ReplaceDuplicateTimeStamps();
 }

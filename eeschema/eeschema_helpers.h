@@ -52,6 +52,14 @@ public:
                                             PROJECT* aProject = nullptr,
                                             bool aCalculateConnectivity = true );
 
+    /**
+     * Apply the non-interactive fixups the schematic editor performs when opening a legacy
+     * (KiCad 5 and earlier) schematic: convert bus-bus entries to bus wires, link symbols
+     * through the project libraries and the legacy cache library, and replace duplicate
+     * time stamps so the schematic can be saved in the s-expression format.
+     */
+    static void              MigrateLegacySchematic( SCHEMATIC* aSchematic );
+
 private:
     static SCH_EDIT_FRAME*   s_SchEditFrame;
 };
