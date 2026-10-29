@@ -52,6 +52,14 @@ public:
                                             bool aCalculateConnectivity = true,
                                             REPORTER* aRootReporter = nullptr );
 
+    /**
+     * Apply the non-interactive fixups the schematic editor performs when opening a legacy
+     * (KiCad 5 and earlier) schematic: give top-level sheets their screen UUIDs, convert
+     * bus-bus entries to bus wires and replace duplicate time stamps so the schematic can be
+     * saved in the s-expression format.  Symbol linking is done by LoadSchematic().
+     */
+    static void              MigrateLegacySchematic( SCHEMATIC* aSchematic );
+
 private:
     static SCH_EDIT_FRAME*   s_SchEditFrame;
 };

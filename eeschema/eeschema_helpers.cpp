@@ -34,6 +34,7 @@
 #include <sch_label.h>
 #include <sch_io/sch_io.h>
 #include <sch_io/sch_io_mgr.h>
+#include <sch_screen.h>
 #include <settings/settings_manager.h>
 #include <wildcards_and_files_ext.h>
 #include <tool/tool_manager.h>
@@ -114,7 +115,11 @@ SCHEMATIC* EESCHEMA_HELPERS::LoadSchematic( const wxString& aFileName,
     {
         if( !project )
         {
-            if( wxFileExists( projectPath ) )
+            // A legacy .pro project is migrated to the current format when loaded
+            wxFileName legacyPro = pro;
+            legacyPro.SetExt( FILEEXT::LegacyProjectFileExtension );
+
+            if( wxFileExists( projectPath ) || legacyPro.FileExists() )
             {
                 mgr.LoadProject( projectPath, aSetActive );
                 project = mgr.GetProject( projectPath );
@@ -271,6 +276,9 @@ SCHEMATIC* EESCHEMA_HELPERS::LoadSchematic( const wxString& aFileName,
         return nullptr;
     }
 
+    if( aFormat == SCH_IO_MGR::SCH_LEGACY )
+        MigrateLegacySchematic( schematic );
+
     SCH_SHEET_LIST sheetList = schematic->BuildSheetListSortedByPageNumbers();
     SCH_SCREENS    screens( schematic->Root() );
 
@@ -324,8 +332,11 @@ SCHEMATIC* EESCHEMA_HELPERS::LoadSchematic( const wxString& aFileName,
 
     sheetList.UpdateSheetInstanceData( schematic->RootScreen()->GetSheetInstances());
 
-    if( schematic->RootScreen()->GetFileFormatVersionAtLoad() < 20230221 )
+    if( aFormat == SCH_IO_MGR::SCH_LEGACY
+        || schematic->RootScreen()->GetFileFormatVersionAtLoad() < 20230221 )
+    {
         screens.FixLegacyPowerSymbolMismatches();
+    }
 
     for( SCH_SCREEN* screen = screens.GetFirst(); screen; screen = screens.GetNext() )
         screen->MigrateSimModels();
@@ -354,7 +365,8 @@ SCHEMATIC* EESCHEMA_HELPERS::LoadSchematic( const wxString& aFileName,
     // limited to pre-current files (the current version writes those junctions on save, so running
     // it on a current file could silently connect an intentional crossing) and to callers that
     // actually want connectivity.
-    if( aCalculateConnectivity
+    // Legacy files get the repair regardless, the same as the schematic editor does on import.
+    if( ( aCalculateConnectivity || aFormat == SCH_IO_MGR::SCH_LEGACY )
         && schematic->RootScreen()->GetFileFormatVersionAtLoad() < SEXPR_SCHEMATIC_FILE_VERSION )
         schematic->FixupJunctionsAfterImport();
 
@@ -385,4 +397,24 @@ SCHEMATIC* EESCHEMA_HELPERS::LoadSchematic( const wxString& aFileName,
     schematic->ResolveERCExclusionsPostUpdate();
 
     return schematic.release();
+}
+
+
+void EESCHEMA_HELPERS::MigrateLegacySchematic( SCHEMATIC* aSchematic )
+{
+    SCH_SCREENS screens( aSchematic->Root() );
+
+    // Same as the s-expression parser: a top-level sheet takes the UUID of its schematic file,
+    // which is what symbol instance paths start with once the file is saved and reloaded.
+    for( SCH_SHEET* sheet : aSchematic->GetTopLevelSheets() )
+    {
+        if( sheet->GetScreen() )
+            const_cast<KIID&>( sheet->m_Uuid ) = sheet->GetScreen()->GetUuid();
+    }
+
+    screens.ConvertBusBusEntries();
+
+    // Legacy schematics can have duplicate time stamps so fix that before converting
+    // to the s-expression format.
+    screens.ReplaceDuplicateTimeStamps();
 }
