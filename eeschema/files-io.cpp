@@ -466,31 +466,7 @@ bool SCH_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
         // LIB_ID checks and symbol rescue only apply to the legacy file formats.
         if( schFileType == SCH_IO_MGR::SCH_LEGACY )
         {
-            // Convert any legacy bus-bus entries to just be bus wires
-            for( SCH_SCREEN* screen = schematic.GetFirst(); screen; screen = schematic.GetNext() )
-            {
-                std::vector<SCH_ITEM*> deleted;
-
-                for( SCH_ITEM* item : screen->Items() )
-                {
-                    if( item->Type() == SCH_BUS_BUS_ENTRY_T )
-                    {
-                        SCH_BUS_BUS_ENTRY* entry = static_cast<SCH_BUS_BUS_ENTRY*>( item );
-                        std::unique_ptr<SCH_LINE> wire = std::make_unique<SCH_LINE>();
-
-                        wire->SetLayer( LAYER_BUS );
-                        wire->SetStartPoint( entry->GetPosition() );
-                        wire->SetEndPoint( entry->GetEnd() );
-
-                        screen->Append( wire.release() );
-                        deleted.push_back( item );
-                    }
-                }
-
-                for( SCH_ITEM* item : deleted )
-                    screen->Remove( item );
-            }
-
+            schematic.ConvertBusBusEntries();
 
             // Convert old projects over to use symbol library table.
             if( schematic.HasNoFullyDefinedLibIds() )
@@ -540,75 +516,7 @@ bool SCH_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
                 bool cacheExists = cacheFn.FileExists();
 
                 if( cacheExists )
-                {
-                    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &Prj() );
-                    std::optional<LIBRARY_TABLE*> table = adapter->ProjectTable();
-
-                    if( table && *table )
-                    {
-                        wxString nickname = Prj().GetProjectName() + "-cache";
-
-                        if( !(*table)->HasRow( nickname ) )
-                        {
-                            LIBRARY_TABLE_ROW& row = (*table)->InsertRow();
-                            row.SetNickname( nickname );
-                            row.SetURI( cacheFn.GetFullPath() );
-                            row.SetType( SCH_IO_MGR::ShowType( SCH_IO_MGR::SCH_LEGACY ) );
-                            row.SetDescription( _( "Legacy project cache library" ) );
-                            (*table)->Save();
-                        }
-
-                        std::vector<wxString> cacheSymbols = adapter->GetSymbolNames( nickname );
-                        std::set<wxString> cacheSymbolSet( cacheSymbols.begin(), cacheSymbols.end() );
-
-                        if( !cacheSymbolSet.empty() )
-                        {
-                            std::vector<wxString> loadedLibs;
-
-                            for( const wxString& libName : adapter->GetLibraryNames() )
-                            {
-                                if( libName == nickname )
-                                    continue;
-
-                                std::optional<LIB_STATUS> status = adapter->GetLibraryStatus( libName );
-
-                                if( status && status->load_status == LOAD_STATUS::LOADED )
-                                    loadedLibs.push_back( libName );
-                            }
-
-                            for( SCH_SCREEN* screen = schematic.GetFirst(); screen; screen = schematic.GetNext() )
-                            {
-                                for( SCH_ITEM* item : screen->Items().OfType( SCH_SYMBOL_T ) )
-                                {
-                                    SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( item );
-                                    LIB_ID newId = symbol->GetLibId();
-                                    UTF8 fullLibName = newId.Format();
-
-                                    if( cacheSymbolSet.count( fullLibName.wx_str() ) )
-                                    {
-                                        bool alreadyExists = false;
-
-                                        for( const wxString& libName : loadedLibs )
-                                        {
-                                            if( adapter->LoadSymbol( libName, fullLibName.wx_str() ) )
-                                            {
-                                                alreadyExists = true;
-                                                break;
-                                            }
-                                        }
-
-                                        if( !alreadyExists )
-                                        {
-                                            newId.SetLibNickname( nickname );
-                                            newId.SetLibItemName( fullLibName );
-                                            symbol->SetLibId( newId );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                    schematic.LinkLegacyCacheLibrary( &Prj(), cacheFn.GetFullPath() );
 
                 if( ( !cfg || !cfg->m_RescueNeverShow ) && !cacheExists )
                 {

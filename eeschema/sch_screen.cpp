@@ -24,9 +24,11 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
  */
 
+#include <set>
 #include <stack>
 #include <vector>
 #include <wx/filefn.h>
+#include <wx/filename.h>
 #include <wx/log.h>
 
 #include <eda_item.h>
@@ -2309,6 +2311,110 @@ bool SCH_SCREENS::HasNoFullyDefinedLibIds()
 
     // return true (i.e. has no fully defined symbol) only if at least one symbol is found
     return has_symbols ? true : false;
+}
+
+
+void SCH_SCREENS::ConvertBusBusEntries()
+{
+    for( SCH_SCREEN* screen = GetFirst(); screen; screen = GetNext() )
+    {
+        std::vector<SCH_ITEM*> entries;
+
+        for( SCH_ITEM* item : screen->Items().OfType( SCH_BUS_BUS_ENTRY_T ) )
+            entries.push_back( item );
+
+        for( SCH_ITEM* item : entries )
+        {
+            SCH_BUS_BUS_ENTRY*        entry = static_cast<SCH_BUS_BUS_ENTRY*>( item );
+            std::unique_ptr<SCH_LINE> wire = std::make_unique<SCH_LINE>();
+
+            wire->SetLayer( LAYER_BUS );
+            wire->SetStartPoint( entry->GetPosition() );
+            wire->SetEndPoint( entry->GetEnd() );
+
+            screen->Append( wire.release() );
+            screen->Remove( entry );
+            delete entry;
+        }
+    }
+}
+
+
+void SCH_SCREENS::LinkLegacyCacheLibrary( PROJECT* aProject, const wxString& aCacheFileName )
+{
+    SYMBOL_LIBRARY_ADAPTER*       adapter = PROJECT_SCH::SymbolLibAdapter( aProject );
+    std::optional<LIBRARY_TABLE*> table = adapter->ProjectTable();
+
+    if( !table || !*table )
+        return;
+
+    wxString nickname = aProject->GetProjectName() + "-cache";
+
+    if( !( *table )->HasRow( nickname ) )
+    {
+        wxFileName cacheFn( aCacheFileName );
+        wxString   uri = cacheFn.GetFullPath();
+
+        if( cacheFn.GetPath() == wxFileName( aProject->GetProjectFullName() ).GetPath() )
+            uri = wxS( "${KIPRJMOD}/" ) + cacheFn.GetFullName();
+
+        LIBRARY_TABLE_ROW& row = ( *table )->InsertRow();
+        row.SetNickname( nickname );
+        row.SetURI( uri );
+        row.SetType( SCH_IO_MGR::ShowType( SCH_IO_MGR::SCH_LEGACY ) );
+        row.SetDescription( _( "Legacy project cache library" ) );
+        ( *table )->Save();
+    }
+
+    std::vector<wxString> cacheSymbols = adapter->GetSymbolNames( nickname );
+    std::set<wxString>    cacheSymbolSet( cacheSymbols.begin(), cacheSymbols.end() );
+
+    if( cacheSymbolSet.empty() )
+        return;
+
+    std::vector<wxString> loadedLibs;
+
+    for( const wxString& libName : adapter->GetLibraryNames() )
+    {
+        if( libName == nickname )
+            continue;
+
+        std::optional<LIB_STATUS> status = adapter->GetLibraryStatus( libName );
+
+        if( status && status->load_status == LOAD_STATUS::LOADED )
+            loadedLibs.push_back( libName );
+    }
+
+    for( SCH_SCREEN* screen = GetFirst(); screen; screen = GetNext() )
+    {
+        for( SCH_ITEM* item : screen->Items().OfType( SCH_SYMBOL_T ) )
+        {
+            SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( item );
+            LIB_ID      newId = symbol->GetLibId();
+            UTF8        fullLibName = newId.Format();
+
+            if( !cacheSymbolSet.count( fullLibName.wx_str() ) )
+                continue;
+
+            bool alreadyExists = false;
+
+            for( const wxString& libName : loadedLibs )
+            {
+                if( adapter->LoadSymbol( libName, fullLibName.wx_str() ) )
+                {
+                    alreadyExists = true;
+                    break;
+                }
+            }
+
+            if( !alreadyExists )
+            {
+                newId.SetLibNickname( nickname );
+                newId.SetLibItemName( fullLibName );
+                symbol->SetLibId( newId );
+            }
+        }
+    }
 }
 
 
