@@ -61,6 +61,8 @@ class SCH_SYMBOL;
 class SCH_LINE;
 class SCH_LABEL_BASE;
 class PLOTTER;
+class PROJECT;
+class KI_ERROR;
 class REPORTER;
 class SCH_IO_ALTIUM;
 class SCH_IO_PADS;
@@ -901,6 +903,24 @@ public:
      *         are empty, otherwise false.
      */
     bool HasNoFullyDefinedLibIds();
+
+    /**
+     * Replace the bus to bus entries of legacy schematics with bus wires.
+     */
+    void ConvertBusBusEntries();
+
+    /**
+     * Add a legacy project symbol cache library to the project symbol library table and link
+     * the symbols that are not found in any other loaded library to it.
+     *
+     * The library is added relative to the project when it is in the project folder.
+     *
+     * @param aProject is the project whose symbol library table is updated.
+     * @param aCacheFileName is the full path of the cache library.
+     * @param aErrors collects one message per library that could not be loaded.
+     */
+    void LinkLegacyCacheLibrary( PROJECT* aProject, const wxString& aCacheFileName,
+                                 std::vector<KI_ERROR>& aErrors );
 
     /**
      * Fetch all of the symbol library nicknames into \a aLibNicknames.

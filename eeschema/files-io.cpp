@@ -557,31 +557,7 @@ bool SCH_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
         // LIB_ID checks and symbol rescue only apply to the legacy file formats.
         if( schFileType == SCH_IO_MGR::SCH_LEGACY )
         {
-            // Convert any legacy bus-bus entries to just be bus wires
-            for( SCH_SCREEN* screen = schematic.GetFirst(); screen; screen = schematic.GetNext() )
-            {
-                std::vector<SCH_ITEM*> deleted;
-
-                for( SCH_ITEM* item : screen->Items() )
-                {
-                    if( item->Type() == SCH_BUS_BUS_ENTRY_T )
-                    {
-                        SCH_BUS_BUS_ENTRY* entry = static_cast<SCH_BUS_BUS_ENTRY*>( item );
-                        std::unique_ptr<SCH_LINE> wire = std::make_unique<SCH_LINE>();
-
-                        wire->SetLayer( LAYER_BUS );
-                        wire->SetStartPoint( entry->GetPosition() );
-                        wire->SetEndPoint( entry->GetEnd() );
-
-                        screen->Append( wire.release() );
-                        deleted.push_back( item );
-                    }
-                }
-
-                for( SCH_ITEM* item : deleted )
-                    screen->Remove( item );
-            }
-
+            schematic.ConvertBusBusEntries();
 
             // Convert old projects over to use symbol library table.
             if( schematic.HasNoFullyDefinedLibIds() )
@@ -629,30 +605,12 @@ bool SCH_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
 
                 if( cacheExists )
                 {
-                    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &Prj() );
-                    std::optional<LIBRARY_TABLE*> table = adapter->ProjectTable();
+                    std::vector<KI_ERROR> libErrors;
 
-                    if( table && *table )
-                    {
-                        wxString nickname = Prj().GetProjectName() + "-cache";
+                    schematic.LinkLegacyCacheLibrary( &Prj(), cacheFn.GetFullPath(), libErrors );
 
-                        if( !(*table)->HasRow( nickname ) )
-                        {
-                            LIBRARY_TABLE_ROW& row = (*table)->InsertRow();
-                            row.SetNickname( nickname );
-                            row.SetURI( cacheFn.GetFullPath() );
-                            row.SetType( SCH_IO_MGR::ShowType( SCH_IO_MGR::SCH_LEGACY ) );
-                            row.SetDescription( _( "Legacy project cache library" ) );
-                            (*table)->Save();
-                        }
-
-                        std::vector<KI_ERROR> libErrors;
-
-                        ReconcileLegacyCacheSymbols( *adapter, nickname, schematic, libErrors );
-
-                        if( KISTATUSBAR* statusBar = dynamic_cast<KISTATUSBAR*>( GetStatusBar() ) )
-                            statusBar->AddWarningMessages( "load", libErrors );
-                    }
+                    if( KISTATUSBAR* statusBar = dynamic_cast<KISTATUSBAR*>( GetStatusBar() ) )
+                        statusBar->AddWarningMessages( "load", libErrors );
                 }
 
                 if( ( !cfg || !cfg->m_RescueNeverShow ) && !cacheExists )
