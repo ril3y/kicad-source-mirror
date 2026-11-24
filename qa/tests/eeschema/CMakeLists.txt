@@ -229,6 +229,7 @@ set( QA_EESCHEMA_SRCS
     test_sch_downgrade.cpp
     test_sch_downgrade_oracle.cpp
     test_incremental_netlister.cpp
+    test_legacy_lib_pin_names.cpp
     test_legacy_power_symbols.cpp
     test_history_autosave_legacy.cpp
     test_sch_api_enums.cpp

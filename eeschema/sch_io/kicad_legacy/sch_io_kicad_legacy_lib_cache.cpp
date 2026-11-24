@@ -1131,6 +1131,12 @@ SCH_PIN* SCH_IO_KICAD_LEGACY_LIB_CACHE::loadPin( std::unique_ptr<LIB_SYMBOL>& aS
     number = tmp ;
     pos += tmp.size() + 1;
 
+    if( name == wxS( "~" ) )
+        name.clear();
+
+    if( number == wxS( "~" ) )
+        number.clear();
+
     long num;
     VECTOR2I position;
 
