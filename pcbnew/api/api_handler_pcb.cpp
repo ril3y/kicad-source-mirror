@@ -53,6 +53,16 @@
 #include <pcb_textbox.h>
 #include <pcb_track.h>
 #include <pcbnew_id.h>
+#include <router/pns_item.h>
+#include <router/pns_itemset.h>
+#include <router/pns_kicad_iface.h>
+#include <router/pns_node.h>
+#include <router/pns_placement_algo.h>
+#include <router/pns_router.h>
+#include <router/pns_routing_settings.h>
+#include <router/pns_segment.h>
+#include <router/pns_via.h>
+#include <router/pns_sizes_settings.h>
 #include <pcb_marker.h>
 #include <pcb_3d_body.h>
 #include <pcb_point.h>
@@ -241,6 +251,9 @@ API_HANDLER_PCB::API_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext, PCB_EDI
             &API_HANDLER_PCB::handleSearchFootprintLibraries );
     registerHandler<GetLibraryFootprint, GetLibraryFootprintResponse>(
             &API_HANDLER_PCB::handleGetLibraryFootprint );
+    registerHandler<RouteTrack, RouteTrackResponse>( &API_HANDLER_PCB::handleRouteTrack );
+    registerHandler<GetRoutingClearanceMap, RoutingClearanceMapResponse>(
+            &API_HANDLER_PCB::handleGetRoutingClearanceMap );
 }
 
 
@@ -3728,3 +3741,404 @@ API_HANDLER_PCB::handleGetLibraryFootprint(
 
     return response;
 }
+
+
+namespace
+{
+/**
+ * Router interface for use without a tool or a view: the router's result goes into a commit
+ * owned by the caller.
+ */
+class API_ROUTER_IFACE : public PNS_KICAD_IFACE
+{
+public:
+    API_ROUTER_IFACE( BOARD_COMMIT* aCommit ) :
+            m_apiCommit( aCommit )
+    {
+    }
+
+    void EraseView() override {}
+    bool IsAnyLayerVisible( const PNS_LAYER_RANGE& aLayer ) const override { return true; }
+    bool IsItemVisible( const PNS::ITEM* aItem ) const override { return true; }
+    void HideItem( PNS::ITEM* aItem ) override {}
+    void DisplayItem( const PNS::ITEM* aItem, int aClearance, bool aEdit = false,
+                      int aFlags = 0 ) override {}
+    void DisplayPathLine( const SHAPE_LINE_CHAIN& aLine, int aImportance ) override {}
+    void DisplayRatline( const SHAPE_LINE_CHAIN& aRatline, PNS::NET_HANDLE aNet ) override {}
+    EDA_UNITS GetUnits() const override { return EDA_UNITS::MM; }
+
+    void AddItem( PNS::ITEM* aItem ) override
+    {
+        if( BOARD_CONNECTED_ITEM* boardItem = createBoardItem( aItem ) )
+        {
+            aItem->SetParent( boardItem );
+            boardItem->ClearFlags();
+            m_apiCommit->Add( boardItem );
+            m_added.push_back( boardItem );
+        }
+    }
+
+    void UpdateItem( PNS::ITEM* aItem ) override { modifyBoardItem( aItem, *m_apiCommit ); }
+
+    void RemoveItem( PNS::ITEM* aItem ) override
+    {
+        BOARD_ITEM* parent = aItem->Parent();
+
+        if( !parent || aItem->OfKind( PNS::ITEM::SOLID_T ) )
+            return;
+
+        m_removedItems.insert( parent );
+        m_apiCommit->Remove( parent );
+    }
+
+    void Commit() override
+    {
+        m_fpOffsets.clear();
+        m_itemGroups.clear();
+        m_removedItems.clear();
+        m_replacementMap.clear();
+    }
+
+    const std::vector<BOARD_ITEM*>& Added() const { return m_added; }
+
+private:
+    BOARD_COMMIT*            m_apiCommit;
+    std::vector<BOARD_ITEM*> m_added;
+};
+} // namespace
+
+
+HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleRouteTrack( const HANDLER_CONTEXT<RouteTrack>& aCtx )
+{
+    if( !validateItemHeaderDocument( aCtx.Request.header() ) )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_UNHANDLED );
+        return tl::unexpected( e );
+    }
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
+
+    auto badRequest = []( const std::string& aMessage )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( aMessage );
+        return tl::unexpected( e );
+    };
+
+    const RouteTrack& request = aCtx.Request;
+    PCB_LAYER_ID      layer = FromProtoEnum<PCB_LAYER_ID, board::types::BoardLayer>( request.layer() );
+
+    if( !IsCopperLayer( layer ) || !board()->IsLayerEnabled( layer ) )
+        return badRequest( "layer must be an enabled copper layer" );
+
+    PNS::PNS_MODE mode = PNS::RM_Walkaround;
+
+    if( request.mode() == RouteTrackMode::RTM_SHOVE )
+        mode = PNS::RM_Shove;
+
+    BOARD_COMMIT*         commit = static_cast<BOARD_COMMIT*>( getCurrentCommit( aCtx.ClientName ) );
+    API_ROUTER_IFACE      iface( commit );
+    PNS::ROUTER           router;
+    PNS::ROUTING_SETTINGS settings( nullptr, "" );
+
+    iface.SetBoard( board() );
+    router.SetInterface( &iface );
+    router.ClearWorld();
+    router.SyncWorld();
+    settings.Set( "walkaround_iteration_limit", 2000 );
+    settings.Set( "walkaround_hug_length_threshold", 50.0 );
+    settings.Load();
+    router.LoadSettings( &settings );
+    router.Settings().SetMode( mode );
+    router.SetMode( PNS::PNS_MODE_ROUTE_SINGLE );
+
+    auto itemAt = [&]( const VECTOR2I& aPos, PCB_LAYER_ID aLayer,
+                       PNS::NET_HANDLE aNet ) -> BOARD_CONNECTED_ITEM*
+    {
+        BOARD_CONNECTED_ITEM* found = nullptr;
+
+        auto accept = [&]( BOARD_CONNECTED_ITEM* aCandidate )
+        {
+            if( aCandidate->GetNetCode() <= 0 || !aCandidate->IsOnLayer( aLayer ) )
+                return false;
+
+            if( aNet && aCandidate->GetNet() != static_cast<NETINFO_ITEM*>( aNet ) )
+                return false;
+
+            return aCandidate->HitTest( aPos );
+        };
+
+        for( FOOTPRINT* footprint : board()->Footprints() )
+        {
+            for( PAD* pad : footprint->Pads() )
+            {
+                if( !found && accept( pad ) )
+                    found = pad;
+            }
+        }
+
+        for( PCB_TRACK* track : board()->Tracks() )
+        {
+            if( found )
+                break;
+
+            if( accept( track ) )
+                found = track;
+        }
+
+        return found;
+    };
+
+    VECTOR2I   start = UnpackVector2( request.start() );
+    int        pnsLayer = iface.GetPNSLayerFromBoardLayer( layer );
+    PNS::ITEM* startItem = nullptr;
+
+    if( BOARD_CONNECTED_ITEM* startBoardItem = itemAt( start, layer, nullptr ) )
+        startItem = router.GetWorld()->FindItemByParent( startBoardItem );
+
+    if( !startItem )
+        return badRequest( "no pad, via or track with a net at the start point on that layer" );
+
+    PNS::NET_HANDLE     net = startItem->Net();
+    PNS::SIZES_SETTINGS sizes( router.Sizes() );
+
+    iface.SetStartLayerFromPCBNew( layer );
+    iface.ImportSizes( sizes, startItem, nullptr, start );
+
+    if( request.has_width() && request.width().value_nm() > 0 )
+        sizes.SetTrackWidth( static_cast<int>( request.width().value_nm() ) );
+
+    router.UpdateSizes( sizes );
+
+    if( !router.StartRouting( start, startItem, pnsLayer ) )
+    {
+        return badRequest( fmt::format( "the router could not start: {}",
+                                        router.FailureReason().ToStdString() ) );
+    }
+
+    for( const RouteTrackWaypoint& waypoint : request.waypoints() )
+    {
+        VECTOR2I position = UnpackVector2( waypoint.position() );
+        int      switchTo = -1;
+
+        if( waypoint.has_layer() )
+        {
+            PCB_LAYER_ID target = FromProtoEnum<PCB_LAYER_ID, board::types::BoardLayer>( waypoint.layer() );
+
+            if( !IsCopperLayer( target ) || !board()->IsLayerEnabled( target ) )
+            {
+                router.StopRouting();
+                return badRequest( "a waypoint layer must be an enabled copper layer" );
+            }
+
+            int targetLayer = iface.GetPNSLayerFromBoardLayer( target );
+
+            if( targetLayer != router.GetCurrentLayer() )
+            {
+                PNS::SIZES_SETTINGS viaSizes( router.Sizes() );
+                viaSizes.AddLayerPair( router.GetCurrentLayer(), targetLayer );
+                router.UpdateSizes( viaSizes );
+
+                if( !router.IsPlacingVia() )
+                    router.ToggleViaPlacement();
+
+                switchTo = targetLayer;
+            }
+        }
+
+        router.Move( position, nullptr );
+
+        if( router.FixRoute( position, nullptr, false, false ) || !router.RoutingInProgress() )
+            break;
+
+        // As the interactive tool does: the via is fixed first, then the route carries on
+        // from it on the other layer
+        if( switchTo >= 0 )
+            router.SwitchLayer( switchTo );
+    }
+
+    bool reachedEnd = false;
+
+    if( router.RoutingInProgress() )
+    {
+        VECTOR2I     end = UnpackVector2( request.end() );
+        PCB_LAYER_ID endLayer = iface.GetBoardLayerFromPNSLayer( router.GetCurrentLayer() );
+        PNS::ITEM*   endItem = nullptr;
+
+        BOARD_CONNECTED_ITEM* endBoardItem = itemAt( end, endLayer, net );
+
+        if( endBoardItem )
+            endItem = router.GetWorld()->FindItemByParent( endBoardItem );
+
+        router.Move( end, endItem );
+
+        VECTOR2I headEnd = router.Placer()->CurrentEnd();
+
+        reachedEnd = endBoardItem && endBoardItem->HitTest( headEnd );
+
+        if( !reachedEnd && !request.allow_partial() )
+        {
+            router.StopRouting();
+
+            return badRequest( fmt::format( "the router could not reach the end; it got as far as "
+                                            "({:.4f}, {:.4f}) mm",
+                                            headEnd.x / 1e6, headEnd.y / 1e6 ) );
+        }
+
+        router.FixRoute( end, endItem, true, false );
+    }
+
+    router.CommitRouting();
+
+    if( iface.Added().empty() )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( fmt::format( "the router laid no track: {}",
+                                          router.FailureReason().ToStdString() ) );
+        return tl::unexpected( e );
+    }
+
+    RouteTrackResponse response;
+    response.mutable_header()->CopyFrom( aCtx.Request.header() );
+    response.set_reached_end( reachedEnd );
+
+    for( BOARD_ITEM* item : iface.Added() )
+        item->Serialize( *response.add_items() );
+
+    if( !m_activeClients.contains( aCtx.ClientName ) )
+        pushCurrentCommit( aCtx.ClientName, _( "Routed track via API" ) );
+
+    return response;
+}
+
+
+HANDLER_RESULT<RoutingClearanceMapResponse> API_HANDLER_PCB::handleGetRoutingClearanceMap(
+        const HANDLER_CONTEXT<GetRoutingClearanceMap>& aCtx )
+{
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    auto badRequest = []( const std::string& aMessage )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( aMessage );
+        return tl::unexpected( e );
+    };
+
+    const GetRoutingClearanceMap& request = aCtx.Request;
+    NETINFO_ITEM*                 net = board()->FindNet( wxString::FromUTF8( request.net_name() ) );
+
+    if( !net || net->GetNetCode() <= 0 )
+        return badRequest( fmt::format( "net '{}' not found", request.net_name() ) );
+
+    const int cell = static_cast<int>( request.cell().value_nm() );
+
+    if( cell < 10000 )
+        return badRequest( "cell must be at least 0.01 mm" );
+
+    BOX2I area = board()->GetBoardEdgesBoundingBox();
+
+    if( area.GetWidth() <= 0 || area.GetHeight() <= 0 )
+        return badRequest( "the board has no outline" );
+
+    const int columns = static_cast<int>( area.GetWidth() / cell ) + 1;
+    const int rows = static_cast<int>( area.GetHeight() / cell ) + 1;
+
+    if( static_cast<int64_t>( columns ) * rows > 4000000 )
+        return badRequest( "the grid would have more than four million cells; use a larger cell" );
+
+    API_ROUTER_IFACE      iface( nullptr );
+    PNS::ROUTER           router;
+    PNS::ROUTING_SETTINGS settings( nullptr, "" );
+
+    iface.SetBoard( board() );
+    router.SetInterface( &iface );
+    router.SyncWorld();
+    router.LoadSettings( &settings );
+
+    PNS::SIZES_SETTINGS sizes( router.Sizes() );
+    iface.ImportSizes( sizes, nullptr, net, area.Centre() );
+
+    int width = sizes.TrackWidth();
+
+    if( request.has_track_width() && request.track_width().value_nm() > 0 )
+        width = static_cast<int>( request.track_width().value_nm() );
+
+    PNS::COLLISION_SEARCH_OPTIONS options;
+    options.m_limitCount = 1;
+
+    if( request.ignore_tracks() )
+        options.m_kindMask = PNS::ITEM::SOLID_T | PNS::ITEM::HOLE_T;
+
+    PNS::NODE*     world = router.GetWorld();
+    const VECTOR2I origin = area.GetOrigin();
+
+    RoutingClearanceMapResponse response;
+    PackVector2( *response.mutable_origin(), origin );
+    response.mutable_cell()->set_value_nm( cell );
+    response.set_columns( columns );
+    response.set_rows( rows );
+    response.mutable_track_width()->set_value_nm( width );
+    response.mutable_via_diameter()->set_value_nm( sizes.ViaDiameter() );
+    response.mutable_via_drill()->set_value_nm( sizes.ViaDrill() );
+
+    for( int layerValue : request.layers() )
+    {
+        PCB_LAYER_ID layer = FromProtoEnum<PCB_LAYER_ID, board::types::BoardLayer>(
+                static_cast<board::types::BoardLayer>( layerValue ) );
+
+        if( !IsCopperLayer( layer ) || !board()->IsLayerEnabled( layer ) )
+            return badRequest( "every layer must be an enabled copper layer" );
+
+        const int   pnsLayer = iface.GetPNSLayerFromBoardLayer( layer );
+        std::string blocked( static_cast<size_t>( columns ) * rows, '\0' );
+
+        for( int row = 0; row < rows; ++row )
+        {
+            for( int column = 0; column < columns; ++column )
+            {
+                VECTOR2I     point( origin.x + column * cell, origin.y + row * cell );
+                PNS::SEGMENT probe( SEG( point, point ), net );
+
+                probe.SetWidth( width );
+                probe.SetLayer( pnsLayer );
+
+                if( world->CheckColliding( &probe, options ) )
+                    blocked[static_cast<size_t>( row ) * columns + column] = 1;
+            }
+        }
+
+        RoutingClearanceMapLayer* layerMap = response.add_layers();
+        layerMap->set_layer( static_cast<board::types::BoardLayer>( layerValue ) );
+        layerMap->set_blocked( std::move( blocked ) );
+    }
+
+    if( request.include_vias() )
+    {
+        PNS_LAYER_RANGE allLayers = iface.SetLayersFromPCBNew( F_Cu, B_Cu );
+        std::string     blocked( static_cast<size_t>( columns ) * rows, '\0' );
+
+        for( int row = 0; row < rows; ++row )
+        {
+            for( int column = 0; column < columns; ++column )
+            {
+                VECTOR2I point( origin.x + column * cell, origin.y + row * cell );
+                PNS::VIA probe( point, allLayers, sizes.ViaDiameter(), sizes.ViaDrill(), net,
+                                VIATYPE::THROUGH );
+
+                if( world->CheckColliding( &probe, options ) )
+                    blocked[static_cast<size_t>( row ) * columns + column] = 1;
+            }
+        }
+
+        response.set_via_blocked( std::move( blocked ) );
+    }
+
+    return response;
+}
+

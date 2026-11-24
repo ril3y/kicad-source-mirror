@@ -669,6 +669,129 @@ message BoardBoundingBoxResponse
 }
 
 
+// How the router treats copper that is in the way
+// Since: 11.0
+enum RouteTrackMode
+{
+  RTM_UNKNOWN = 0;
+  // Go around obstacles and leave them where they are
+  RTM_WALKAROUND = 1;
+  // Push tracks and vias of other nets aside where the rules allow
+  RTM_SHOVE = 2;
+}
+
+// Since: 11.0
+message RouteTrackWaypoint
+{
+  kiapi.common.types.Vector2 position = 1;
+
+  // If set to a layer other than the one being routed on, a via is placed at this
+  // waypoint and the track continues on this layer.
+  optional kiapi.board.types.BoardLayer layer = 2;
+}
+
+// Routes a single track with the interactive router, as if drawn by hand:
+// from `start`, through each waypoint in order, to `end`.
+// The track takes the net of the pad, via or track found at `start` on `layer`.
+// Returns RouteTrackResponse
+// Since: 11.0
+message RouteTrack
+{
+  kiapi.common.types.ItemHeader header = 1;
+
+  kiapi.common.types.Vector2 start = 2;
+
+  kiapi.board.types.BoardLayer layer = 3;
+
+  repeated RouteTrackWaypoint waypoints = 4;
+
+  kiapi.common.types.Vector2 end = 5;
+
+  // If unspecified, will use RTM_WALKAROUND
+  RouteTrackMode mode = 6;
+
+  // If unspecified, will use the width the board's rules give the net
+  optional kiapi.common.types.Distance width = 7;
+
+  // If false, nothing is added to the board when the router cannot reach `end`,
+  // and an error says how far it got.  If true, the part it could route is kept.
+  bool allow_partial = 8;
+}
+
+// Since: 11.0
+message RouteTrackResponse
+{
+  kiapi.common.types.ItemHeader header = 1;
+
+  // The tracks and vias that were created
+  repeated google.protobuf.Any items = 2;
+
+  // True if the track ended on an item of the same net at `end`
+  bool reached_end = 3;
+}
+
+
+// Asks where a track or via of one net may be placed, as the interactive router's
+// rules see it: a grid over the board, one answer per cell.
+// Returns RoutingClearanceMapResponse
+// Since: 11.0
+message GetRoutingClearanceMap
+{
+  kiapi.common.types.DocumentSpecifier board = 1;
+
+  string net_name = 2;
+
+  repeated kiapi.board.types.BoardLayer layers = 3;
+
+  // Grid pitch
+  kiapi.common.types.Distance cell = 4;
+
+  // If unspecified, will use the width the board's rules give the net
+  optional kiapi.common.types.Distance track_width = 5;
+
+  // Also report where a through via of the net's size may be placed
+  bool include_vias = 6;
+
+  // Treat tracks and vias of other nets as absent, leaving pads, holes, keepouts
+  // and the board edge
+  bool ignore_tracks = 7;
+}
+
+// Since: 11.0
+message RoutingClearanceMapLayer
+{
+  kiapi.board.types.BoardLayer layer = 1;
+
+  // One byte per cell, row by row from the origin: 1 if a track centred on the
+  // cell would break a rule, otherwise 0
+  bytes blocked = 2;
+}
+
+// Since: 11.0
+message RoutingClearanceMapResponse
+{
+  // Centre of the first cell
+  kiapi.common.types.Vector2 origin = 1;
+
+  kiapi.common.types.Distance cell = 2;
+
+  int32 columns = 3;
+
+  int32 rows = 4;
+
+  repeated RoutingClearanceMapLayer layers = 5;
+
+  // Same layout as RoutingClearanceMapLayer.blocked, for a via; empty unless requested
+  bytes via_blocked = 6;
+
+  kiapi.common.types.Distance track_width = 7;
+
+  kiapi.common.types.Distance via_diameter = 8;
+
+  kiapi.common.types.Distance via_drill = 9;
+}
+
+
 //// Interactive commands ////
 // These commands begin an interactive operation in the editor.
 // They return a response immediately, but the editor will become busy
