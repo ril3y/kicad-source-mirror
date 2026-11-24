@@ -160,7 +160,6 @@ API_HANDLER_SCH::API_HANDLER_SCH( std::shared_ptr<SCH_CONTEXT> aContext,
             &API_HANDLER_SCH::handleSaveDocumentToString );
     registerHandler<commands::SaveSelectionToString, commands::SavedSelectionResponse>(
             &API_HANDLER_SCH::handleSaveSelectionToString );
-    registerHandler<SaveDocument, Empty>( &API_HANDLER_SCH::handleSaveDocument );
     registerHandler<GetItems, GetItemsResponse>( &API_HANDLER_SCH::handleGetItems );
     registerHandler<GetItemsById, GetItemsResponse>( &API_HANDLER_SCH::handleGetItemsById );
 
@@ -676,24 +675,6 @@ API_HANDLER_SCH::handleGetDocumentModifiedState( const HANDLER_CONTEXT<GetDocume
     response.set_state( schematic()->Hierarchy().IsModified() ? DocumentModifiedState::DMS_MODIFIED
                                                               : DocumentModifiedState::DMS_UNMODIFIED );
     return response;
-}
-
-
-HANDLER_RESULT<Empty> API_HANDLER_SCH::handleSaveDocument(
-        const HANDLER_CONTEXT<SaveDocument>& aCtx )
-{
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
-
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() );
-
-    if( !documentValidation )
-        return tl::unexpected( documentValidation.error() );
-
-    if( m_frame )
-        m_frame->SaveProject( false );
-
-    return Empty();
 }
 
 
