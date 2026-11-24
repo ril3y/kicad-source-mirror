@@ -228,6 +228,15 @@ private:
     HANDLER_RESULT<commands::HighlightNetsResponse> handleHighlightNets(
             const HANDLER_CONTEXT<commands::HighlightNets>& aCtx );
 
+    HANDLER_RESULT<ListFootprintLibrariesResponse> handleListFootprintLibraries(
+            const HANDLER_CONTEXT<ListFootprintLibraries>& aCtx );
+
+    HANDLER_RESULT<SearchFootprintLibrariesResponse> handleSearchFootprintLibraries(
+            const HANDLER_CONTEXT<SearchFootprintLibraries>& aCtx );
+
+    HANDLER_RESULT<GetLibraryFootprintResponse> handleGetLibraryFootprint(
+            const HANDLER_CONTEXT<GetLibraryFootprint>& aCtx );
+
 protected:
     kiapi::common::types::DocumentType thisDocumentType() const override
     {
