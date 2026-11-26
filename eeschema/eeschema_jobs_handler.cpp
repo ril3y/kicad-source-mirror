@@ -2680,6 +2680,10 @@ int EESCHEMA_JOBS_HANDLER::JobImport( JOB* aJob )
             kicadPi->SaveSchematicFile( fn.GetFullPath(), screens.GetSheet( i ), schematic.get() );
             sheetCount++;
 
+            // PrepareSaveAsFiles leaves copied screens at their source path; the project's
+            // top-level sheet list is built from screen file names, so point them at the copy.
+            screen->SetFileName( fn.GetFullPath() );
+
             auto symbols = screen->Items().OfType( SCH_SYMBOL_T );
             symbolCount += std::distance( symbols.begin(), symbols.end() );
         }

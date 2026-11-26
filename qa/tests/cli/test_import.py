@@ -99,6 +99,14 @@ def get_easyedapro_v2_single_board_test_file() -> str:
     return archive if os.path.exists( archive ) else None
 
 
+def get_diptrace_multisheet_test_file() -> str:
+    """Get a DipTrace schematic fixture with several pages (one top-level sheet per page)."""
+    dch = os.path.join( os.path.dirname( __file__ ), "..", "..", "data", "eeschema", "plugins",
+                        "diptrace", "z80_board.dch" )
+
+    return dch if os.path.exists( dch ) else None
+
+
 class TestImportHelp:
     """Test help output for the top-level import command"""
 
@@ -327,6 +335,35 @@ class TestImportSchematicOnly:
 
         with open( stem.with_suffix( ".kicad_sch" ), "r" ) as f:
             assert "(kicad_sch" in f.read( 100 )
+
+
+@pytest.mark.skipif( get_diptrace_multisheet_test_file() is None,
+                     reason="DipTrace multi-page schematic test file not available" )
+class TestImportMultiSheetSchematic:
+    """Test importing a schematic whose pages become several top-level sheets"""
+
+    def test_import_top_level_sheets_point_at_written_files( self, kitest: KiTestFixture ):
+        """Every top-level sheet in the project names a file written beside the project"""
+        dch_file = get_diptrace_multisheet_test_file()
+        stem = get_project_stem( kitest, "multi_sheet", "design" )
+
+        command = [ utils.kicad_cli(), "import", dch_file, "-o", str( stem ) ]
+
+        stdout, stderr, return_code = utils.run_and_capture( command )
+
+        assert return_code == 0
+
+        with open( stem.with_suffix( ".kicad_pro" ), "r" ) as f:
+            project = json.load( f )
+
+        sheets = project["schematic"]["top_level_sheets"]
+        assert len( sheets ) > 1
+
+        for sheet in sheets:
+            filename = sheet["filename"]
+            assert not os.path.isabs( filename ), filename
+            assert ( stem.parent / filename ).resolve().parent == stem.parent.resolve(), filename
+            assert ( stem.parent / filename ).exists(), filename
 
 
 @pytest.mark.skipif( get_pads_test_file() is None or get_eagle_test_file() is None,
